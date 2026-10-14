@@ -7,7 +7,10 @@
   dk [nome]   containers Docker: logs, shell, start/stop/restart
   sv [nome]   serviços do systemd: status, logs, start/stop/restart
   ts [nome]   aparelhos da rede Tailscale: copiar IP, SSH, ping
-  ia <texto>  pergunta pra IA local (Ollama); a resposta chega numa notificação
+  ia <texto>  pergunta pra IA local (Ollama); "ia liberar" tira o modelo da memória
+  hm <tarefa> manda uma tarefa pro Hermes (agente que mexe no PC)
+
+  krocket menu   os mesmos comandos num menu do rofi, pra qualquer desktop (Hyprland, GNOME...)
 
 Roda como um serviço D-Bus (org.kde.krunner1). O KRunner sobe ele sozinho pela
 ativação do D-Bus; não precisa deixar rodando. Config: ~/.config/krocket/config.toml
@@ -76,7 +79,14 @@ PADRAO = {
         "instrucoes": "Responda em português do Brasil, curto e direto (no máximo 3 frases). "
                       "Se a pergunta pedir um comando, responda só com o comando, sem crases.",
     },
+    "hermes": {"palavra": "hm", "comando": "hermes", "terminal": "konsole"},
     "ajuda": {"palavra": "kr"},
+    "menu": {
+        "tema": "~/.config/krocket/tema.rasi",
+        "icones": "",  # tema de ícones; vazio = o mesmo do desktop
+        "cor_palavra": "#e92f17",
+        "busca": "https://www.google.com/search?q={}",  # texto solto + Enter pesquisa aqui
+    },
 }
 
 
@@ -112,22 +122,40 @@ def lancar(cmd, cwd=None, env=None):
 
 
 def no_terminal(terminal, args, cwd=None, segurar=False):
-    """Roda args num terminal novo. segurar=True deixa a janela aberta quando o comando termina."""
+    """Roda args num terminal novo. segurar=True deixa a janela aberta quando o comando termina.
+    Cada terminal recebe pasta, "segurar" e comando de um jeito; os comuns estão aqui."""
     term = shlex.split(terminal)
-    if "konsole" in term[0]:
-        extra = (["--workdir", cwd] if cwd else []) + (["--hold"] if segurar else [])
-        lancar(term + extra + (["-e"] + args if args else []), cwd=cwd)
+    nome = Path(term[0]).name
+    if segurar and args and nome not in ("konsole", "kitty", "foot", "alacritty", "xterm"):
+        args = ["sh", "-c", 'eval "$0"; printf "\n[Enter fecha]"; read _', shlex.join(args)]
+        segurar = False
+    if nome == "konsole":
+        cmd = term + (["--workdir", cwd] if cwd else []) + (["--hold"] if segurar else []) + (["-e"] + args if args else [])
+    elif nome in ("kitty", "foot"):
+        pasta = ["--directory", cwd] if nome == "kitty" and cwd else ([f"--working-directory={cwd}"] if cwd else [])
+        cmd = term + pasta + (["--hold"] if segurar else []) + args
+    elif nome == "alacritty":
+        cmd = term + (["--working-directory", cwd] if cwd else []) + (["--hold"] if segurar else []) + (["-e"] + args if args else [])
+    elif nome == "wezterm":
+        cmd = term + ["start"] + (["--cwd", cwd] if cwd else []) + (["--"] + args if args else [])
+    elif nome in ("gnome-terminal", "kgx", "ptyxis", "xfce4-terminal"):
+        cmd = term + ([f"--working-directory={cwd}"] if cwd else []) + (["--"] + args if args else [])
+    elif nome == "xterm":
+        cmd = term + (["-hold"] if segurar else []) + (["-e"] + args if args else [])
     else:
-        lancar(term + (["-e"] + args if args else []), cwd=cwd)
+        cmd = term + (["-e"] + args if args else [])
+    lancar(cmd, cwd=cwd)
 
 
-def avisar(titulo, texto="", icone="dialog-information", substituir=None):
+def avisar(titulo, texto="", icone="dialog-information", substituir=None, expira=None):
     """Mostra uma notificação e devolve o id dela (pra substituir depois)."""
     if not shutil.which("notify-send"):
         return None
     cmd = ["notify-send", "-a", "krocket", "-i", icone, "-p"]
     if substituir:
         cmd += ["-r", str(substituir)]
+    if expira:
+        cmd += ["-t", str(expira)]
     r = subprocess.run(cmd + [titulo, texto], capture_output=True, text=True)
     return r.stdout.strip() or None
 
@@ -138,9 +166,13 @@ def copiar(texto, aviso=True):
         klipper.setClipboardContents(texto, dbus_interface="org.kde.klipper.klipper")
         if aviso:
             avisar("Copiado", texto, "edit-copy")
-    except dbus.DBusException:
-        if shutil.which("wl-copy"):
+    except dbus.DBusException:  # sem Klipper (fora do KDE)
+        if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
             subprocess.run(["wl-copy", texto])
+        elif shutil.which("xclip"):
+            subprocess.run(["xclip", "-selection", "clipboard"], input=texto, text=True)
+        if aviso:
+            avisar("Copiado", texto, "edit-copy")
 
 
 def abrir_krunner(texto, plugin=None):
@@ -187,8 +219,13 @@ class Plugin(dbus.service.Object):
     DESCRICAO = ""
     ICONE = "system-run"
 
+    LIMITE = 15  # quantos resultados no KRunner (o menu do rofi mostra todos)
+
     def __init__(self, bus, cfg):
-        super().__init__(bus, self.CAMINHO)
+        if bus:
+            super().__init__(bus, self.CAMINHO)
+        else:  # modo menu: o objeto não vai pro D-Bus
+            super().__init__()
         self.cfg = cfg
 
     def separar(self, query):
@@ -337,6 +374,7 @@ class Repos(Plugin):
     CAMINHO = "/repos"
     ID = "krocket-repos"
     SEM_PALAVRA = True
+    LIMITE = 10
     DESCRICAO = "Abre um repositório no VS Code"
     ICONE = "folder-git"
     ACOES = [
@@ -420,7 +458,7 @@ class Repos(Plugin):
             achados.append((nota, caminho, item))
         achados.sort(key=lambda a: (-a[0], -a[2]["recente"], a[2]["nome"]))
         saida = []
-        for nota, caminho, item in achados[:10]:
+        for nota, caminho, item in achados[:self.LIMITE]:
             extra = []
             if item["branch"]:
                 extra.append(item["branch"])
@@ -444,7 +482,8 @@ def abrir_repo(c, caminho, acao, web=None):
     elif acao == "claude":
         no_terminal(c["terminal"], shlex.split(c["claude"]), cwd=caminho)
     elif acao == "pasta":
-        lancar(shlex.split(c["arquivos"]) + [caminho])
+        gerenciador = shlex.split(c["arquivos"])
+        lancar((gerenciador if shutil.which(gerenciador[0]) else ["xdg-open"]) + [caminho])
     elif acao == "web":
         if web:
             lancar(["xdg-open", web])
@@ -641,7 +680,7 @@ class Docker(Plugin):
             icone = "docker" if rodando else "media-playback-paused"
             saida.append(resultado(nome, nome, icone, ALTA, nota, "  ·  ".join(p for p in partes if p), acoes))
         saida.sort(key=lambda r: -r[4])
-        return saida[:15]
+        return saida[:self.LIMITE]
 
     def comando(self, nome, verbo):
         r = subprocess.run(["docker", verbo, nome], capture_output=True, text=True)
@@ -738,12 +777,14 @@ class Servicos(Plugin):
                 nota += 0.1 if fav else 0
             elif fav:
                 nota = 1 - favoritos.index(base) * 0.01
+            elif d["ativo"] == "failed":  # serviço quebrado sempre aparece
+                nota = 1.1
             else:
                 continue
             achados.append((nota, id_, unidade, d))
         achados.sort(key=lambda a: -a[0])
         saida = []
-        for nota, id_, unidade, d in achados[:12]:
+        for nota, id_, unidade, d in achados[:self.LIMITE]:
             ativo = d["ativo"] == "active"
             estado = f"{d['ativo']} ({d['sub']})" if d["sub"] else d["ativo"]
             partes = [estado, d["habilitado"], "usuário" if d["usuario"] else "sistema", d["desc"]]
@@ -868,11 +909,51 @@ class IA(Plugin):
         self.respostas = {}  # pergunta -> resposta (até o serviço reiniciar)
         self.pensando = set()
 
+    PALAVRAS_LIBERAR = ("liberar", "descarregar", "parar", "stop")
+
+    def api(self, rota, corpo=None, timeout=180):
+        req = urllib.request.Request(self.cfg["url"].rstrip("/") + rota,
+                                     json.dumps(corpo).encode() if corpo is not None else None,
+                                     {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+
+    def carregados(self):
+        """[(modelo, GB)] do que está ocupando RAM/VRAM agora."""
+        try:
+            return [(m["name"], m.get("size", 0) / 2**30) for m in self.api("/api/ps", timeout=1).get("models", [])]
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+            return []
+
+    def item_liberar(self, nota):
+        modelos = self.carregados()
+        if modelos:
+            sub = "  ·  ".join(f"{n} ({gb:.0f} GB)" for n, gb in modelos) + "  ·  tira da memória agora"
+            return resultado("@liberar", "Liberar a memória da IA", "edit-clear", ALTA, nota, sub, [])
+        return resultado("", "A IA não está ocupando memória", "edit-clear", ALTA, nota,
+                         "Nenhum modelo carregado no Ollama", [])
+
+    def liberar(self):
+        modelos = self.carregados()
+        try:
+            for nome, _ in modelos:
+                self.api("/api/generate", {"model": nome, "keep_alive": 0}, timeout=30)
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
+            avisar("Não deu pra liberar a IA", str(e), "dialog-error")
+            return
+        livre = sum(gb for _, gb in modelos)
+        avisar("Memória da IA liberada", f"{', '.join(n for n, _ in modelos)}  ·  {livre:.0f} GB livres"
+               if modelos else "Nada estava carregado", "edit-clear")
+
     def buscar(self, termo, com_palavra):
         modelo = self.cfg["modelo"]
         if not termo:
             return [resultado("", f"Pergunte algo pro {modelo}", "dialog-messages", ALTA, 1.0,
-                              "ia <pergunta>  ·  Enter manda, a resposta chega numa notificação")]
+                              "ia <pergunta>  ·  Enter manda, a resposta chega numa notificação"),
+                    self.item_liberar(0.9)]
+        n = normalizar(termo)
+        if len(n) >= 3 and any(p.startswith(n) for p in self.PALAVRAS_LIBERAR):
+            return [self.item_liberar(1.0)]
         if termo in self.respostas:
             resp = self.respostas[termo]
             return [resultado(termo, resp, "dialog-messages", ALTA, 1.0,
@@ -883,37 +964,96 @@ class IA(Plugin):
         return [resultado(termo, f"Perguntar: {termo}", "dialog-messages", ALTA, 1.0,
                           f"{modelo}  ·  Enter manda, a resposta chega numa notificação", ["webui"])]
 
-    def perguntar(self, pergunta):
+    def perguntar(self, pergunta, notificar=True):
+        """Pergunta pro Ollama e devolve a resposta (None se falhou)."""
         c = self.cfg
         self.pensando.add(pergunta)
-        id_ = avisar(f"Perguntando pro {c['modelo']}...", pergunta, "chronometer")
-        corpo = json.dumps({
-            "model": c["modelo"], "stream": False, "think": False, "keep_alive": c["manter_carregado"],
-            "messages": [{"role": "system", "content": c["instrucoes"]}, {"role": "user", "content": pergunta}],
-        }).encode()
+        id_ = avisar(f"Perguntando pro {c['modelo']}...", pergunta, "chronometer") if notificar else None
         try:
-            req = urllib.request.Request(c["url"].rstrip("/") + "/api/chat", corpo,
-                                         {"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=180) as r:
-                resposta = json.load(r)["message"]["content"].strip()
-        except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as e:
-            self.pensando.discard(pergunta)
+            resposta = self.api("/api/chat", {
+                "model": c["modelo"], "stream": False, "think": False, "keep_alive": c["manter_carregado"],
+                "messages": [{"role": "system", "content": c["instrucoes"]}, {"role": "user", "content": pergunta}],
+            })["message"]["content"].strip()
+        except (urllib.error.URLError, TimeoutError, ValueError, KeyError, OSError) as e:
             avisar("IA local não respondeu", f"{e}. O Ollama está rodando? (sv ollama)", "dialog-error", substituir=id_)
-            return
-        self.pensando.discard(pergunta)
+            return None
+        finally:
+            self.pensando.discard(pergunta)
         self.respostas[pergunta] = resposta
         if c["copiar_resposta"]:
             copiar(resposta, aviso=False)
-        rodape = "\n\n(copiado)" if c["copiar_resposta"] else ""
-        avisar(pergunta, resposta + rodape, "dialog-messages", substituir=id_)
+        if notificar:
+            rodape = "\n\n(copiado)" if c["copiar_resposta"] else ""
+            avisar(pergunta, resposta + rodape, "dialog-messages", substituir=id_)
+        return resposta
 
     def rodar(self, pergunta, acao):
-        if acao == "webui":
+        if pergunta == "@liberar":
+            threading.Thread(target=self.liberar, daemon=True).start()
+        elif acao == "webui":
             lancar(["xdg-open", f"{self.cfg['webui'].rstrip('/')}/?q={quote(pergunta)}"])
         elif pergunta in self.respostas:
             copiar(self.respostas[pergunta])
         elif pergunta not in self.pensando:
             threading.Thread(target=self.perguntar, args=(pergunta,), daemon=True).start()
+
+
+# ---------------------------------------------------------------- hermes
+
+class Hermes(Plugin):
+    CAMINHO = "/hermes"
+    ID = "krocket-hermes"
+    DESCRICAO = "Manda uma tarefa pro Hermes (agente que mexe no PC)"
+    ICONE = "dialog-scripts"
+    ACOES = [
+        ("fundo", "Rodar em segundo plano (resposta numa notificação)", "system-run"),
+        ("copiar", "Copiar a resposta", "edit-copy"),
+    ]
+
+    def __init__(self, bus, cfg):
+        super().__init__(bus, cfg)
+        self.respostas, self.rodando = {}, set()
+
+    def buscar(self, termo, com_palavra):
+        if not shutil.which(self.cfg["comando"]):
+            return [resultado("", "Hermes não está instalado", "dialog-warning", ALTA, 1.0,
+                              "Veja ~/dotfiles/ia/LEIA-ME.md")]
+        if not termo:
+            return [resultado("", "Mande uma tarefa pro Hermes", self.ICONE, ALTA, 1.0,
+                              "hm <tarefa>  ·  ex.: hm organiza minha pasta Downloads por tipo")]
+        if termo in self.respostas:
+            return [resultado(termo, self.respostas[termo], self.ICONE, ALTA, 1.0,
+                              "Resposta do Hermes  ·  Enter copia", ["copiar"], multilinha=True)]
+        if termo in self.rodando:
+            return [resultado("", "O Hermes está trabalhando nisso...", "chronometer", ALTA, 1.0,
+                              "A resposta chega numa notificação")]
+        return [resultado(termo, f"Hermes: {termo}", self.ICONE, ALTA, 1.0,
+                          "Enter abre no terminal (dá pra acompanhar e aprovar)  ·  ou rode em segundo plano",
+                          ["fundo"])]
+
+    def em_segundo_plano(self, tarefa):
+        self.rodando.add(tarefa)
+        id_ = avisar("Hermes trabalhando...", tarefa, "chronometer")
+        try:
+            r = subprocess.run([self.cfg["comando"], "-z", tarefa], capture_output=True, text=True,
+                               timeout=900, stdin=subprocess.DEVNULL)
+            resposta = (r.stdout.strip() or r.stderr.strip())[-2000:]
+            ok = r.returncode == 0
+        except subprocess.TimeoutExpired:
+            resposta, ok = "Passou de 15 minutos, desisti de esperar.", False
+        finally:
+            self.rodando.discard(tarefa)
+        self.respostas[tarefa] = resposta
+        avisar("Hermes terminou" if ok else "Hermes deu erro", resposta[-600:],
+               "dialog-scripts" if ok else "dialog-error", substituir=id_)
+
+    def rodar(self, tarefa, acao):
+        if acao == "fundo":
+            threading.Thread(target=self.em_segundo_plano, args=(tarefa,), daemon=True).start()
+        elif acao == "copiar" or tarefa in self.respostas:
+            copiar(self.respostas.get(tarefa, ""))
+        else:
+            no_terminal(self.cfg["terminal"], [self.cfg["comando"], "chat", "-q", tarefa])
 
 
 # ---------------------------------------------------------------- ajuda
@@ -983,8 +1123,211 @@ def montar(bus, cfg):
         Servicos(bus, cfg["servicos"]),
         Tailscale(bus, cfg["tailscale"]),
         IA(bus, cfg["ia"]),
+        Hermes(bus, cfg["hermes"]),
     ]
     return plugins + [Ajuda(bus, cfg["ajuda"], plugins)]
+
+
+# ---------------------------------------------------------------- menu (rofi)
+# Os mesmos plugins, mostrados no rofi em vez do KRunner. Funciona em qualquer desktop.
+
+AQUI = Path(__file__).resolve().parent
+RODAPE = "Enter abre  ·  Shift+Enter mais ações  ·  Ctrl+Enter usa o que você digitou  ·  kr ajuda"
+
+
+def esc(texto):
+    return GLib.markup_escape_text(" ⏎ ".join(str(texto).split("\n")))
+
+
+def tema_icones(cfg):
+    if cfg["icones"]:
+        return cfg["icones"]
+    for arquivo, padrao in ((Path.home() / ".config/kdeglobals", r"^\[Icons\]\s*\nTheme=(.+)$"),
+                            (Path.home() / ".config/gtk-3.0/settings.ini", r"^gtk-icon-theme-name\s*=\s*(.+)$")):
+        try:
+            m = re.search(padrao, arquivo.read_text(errors="ignore"), re.M)
+            if m:
+                return m.group(1).strip()
+        except OSError:
+            pass
+    return None
+
+
+def tema_rofi(cfg):
+    tema = Path(cfg["tema"]).expanduser()
+    return str(tema if tema.exists() else AQUI / "menu" / "tema.rasi")
+
+
+def rofi(cfg, entradas, prompt="krocket", mesg="", filtro=""):
+    """Abre o rofi em modo dmenu. Devolve (mais_acoes, índice, texto digitado) ou None se fechou."""
+    linhas = []
+    for e in entradas:
+        opcoes = []
+        if e.get("icone"):
+            opcoes += ["icon", e["icone"]]
+        if e.get("meta"):
+            opcoes += ["meta", e["meta"]]
+        linhas.append(e["texto"] + ("\0" + "\x1f".join(opcoes) if opcoes else ""))
+    cmd = ["rofi", "-dmenu", "-i", "-markup-rows", "-show-icons", "-format", "i f", "-p", prompt,
+           "-theme", tema_rofi(cfg), "-kb-accept-alt", "", "-kb-custom-1", "Shift+Return"]
+    icones = tema_icones(cfg)
+    if icones:
+        cmd += ["-icon-theme", icones]
+    if mesg:
+        cmd += ["-mesg", mesg]
+    if filtro:
+        cmd += ["-filter", filtro]
+    r = subprocess.run(cmd, input="\n".join(linhas), capture_output=True, text=True)
+    if r.returncode not in (0, 10):
+        return None
+    indice, _, digitado = r.stdout.rstrip("\n").partition(" ")
+    return r.returncode == 10, int(indice) if re.fullmatch(r"-?\d+", indice) else -1, digitado
+
+
+class Menu:
+    def __init__(self, cfg):
+        self.cfg, self.mc = cfg, cfg["menu"]
+        self.plugins = montar(None, cfg)
+        for p in self.plugins:
+            p.LIMITE = 500  # no menu cabe tudo, o rofi filtra
+        self.por_tipo = {type(p).__name__: p for p in self.plugins}
+
+    def linha(self, palavra, texto, sub):
+        t = f"<span foreground='{self.mc['cor_palavra']}' font_weight='bold'>{esc(palavra)}</span>  {esc(texto)}"
+        if sub:
+            t += f"    <span alpha='55%' size='small'>{esc(sub)}</span>"
+        return t
+
+    def coletar(self):
+        """Tudo o que aparece no menu: resultado de cada plugin com a palavra-chave dele."""
+        ordem = ["Repos", "Git", "Docker", "Servicos", "Tailscale", "IA", "Hermes"]
+        with ThreadPoolExecutor(len(ordem)) as ex:
+            resultados = dict(zip(ordem, ex.map(lambda t: self.por_tipo[t].Match(self.por_tipo[t].cfg["palavra"]), ordem)))
+        entradas = []
+        for tipo in ordem:
+            p = self.por_tipo[tipo]
+            palavra = p.cfg["palavra"]
+            for id_, texto, icone, _rel, _nota, props in resultados[tipo]:
+                sub = str(props.get("subtext", ""))
+                entradas.append({
+                    "texto": self.linha(palavra, texto, sub), "icone": icone, "plugin": p, "id": str(id_),
+                    "nome": str(texto), "acoes": [str(a) for a in props["actions"]] if "actions" in props else None,
+                    "meta": f"{palavra} {normalizar(str(texto))} {normalizar(sub)}",
+                })
+        ajuda = self.por_tipo["Ajuda"]
+        for nome, texto, desc, icone, origem, _ in ajuda.itens():
+            if origem == "do KDE" and not texto.endswith(":"):
+                continue  # calculadora, kill... são do KRunner, não existem no rofi
+            entradas.append({"texto": self.linha(ajuda.cfg["palavra"], nome, desc), "icone": icone,
+                             "plugin": ajuda, "id": texto, "nome": nome,
+                             "meta": f"{ajuda.cfg['palavra']} ajuda {normalizar(nome)} {normalizar(desc)}"})
+        return entradas
+
+    def escolher_acao(self, e):
+        p = e["plugin"]
+        acoes = [a for a in p.ACOES if e["acoes"] is None or a[0] in e["acoes"]]
+        opcoes = [{"texto": f"<b>Abrir</b>    <span alpha='55%' size='small'>ação padrão</span>",
+                   "icone": e["icone"]}]
+        opcoes += [{"texto": esc(nome), "icone": icone} for _, nome, icone in acoes]
+        r = rofi(self.mc, opcoes, prompt=e["nome"][:40])
+        if not r or r[1] < 0:
+            return None
+        return "" if r[1] == 0 else acoes[r[1] - 1][0]
+
+    def perguntar_ia(self, pergunta):
+        ia = self.por_tipo["IA"]
+        espera = subprocess.Popen(["rofi", "-theme", tema_rofi(self.mc), "-e",
+                                   f"Perguntando pro {ia.cfg['modelo']}...\n\n{pergunta}"])
+        resposta = ia.perguntar(pergunta, notificar=False)
+        espera.terminate()
+        if resposta is None:
+            return None
+        opcoes = [{"texto": "Copiar a resposta", "icone": "edit-copy"},
+                  {"texto": "Continuar no Open WebUI", "icone": "internet-web-browser"},
+                  {"texto": "Perguntar outra coisa", "icone": "dialog-messages"}]
+        copiado = "  <span alpha='55%' size='small'>(já copiada)</span>" if ia.cfg["copiar_resposta"] else ""
+        r = rofi(self.mc, opcoes, prompt="ia", mesg=f"<b>{esc(pergunta)}</b>\n\n{GLib.markup_escape_text(resposta)}{copiado}")
+        if not r or r[1] < 0:
+            return None
+        if r[1] == 0:
+            copiar(resposta, aviso=False)
+        elif r[1] == 1:
+            ia.rodar(pergunta, "webui")
+        else:
+            return ia.cfg["palavra"] + " "
+        return None
+
+    def executar(self, e, mais_acoes, digitado):
+        """Roda a entrada escolhida. Devolve um texto pra reabrir o menu filtrado, ou None pra fechar."""
+        p = e["plugin"]
+        if isinstance(p, Ajuda):
+            return e["id"]
+        if not e["id"]:  # dica ("Pergunte algo..."): reabre com a palavra-chave digitada
+            return p.cfg["palavra"] + " "
+        acao = ""
+        if mais_acoes:
+            acao = self.escolher_acao(e)
+            if acao is None:
+                return digitado
+        if isinstance(p, IA) and not acao and e["id"] != "@liberar" and e["id"] not in p.respostas:
+            return self.perguntar_ia(e["id"])
+        p.rodar(e["id"], acao)
+        return None
+
+    def texto_livre(self, texto):
+        """Enter num texto que não bate com nada: ia/hm com pergunta, atalho web ou busca."""
+        texto = texto.strip()
+        if not texto:
+            return None
+        for tipo in ("IA", "Hermes"):
+            p = self.por_tipo[tipo]
+            com, termo = p.separar(texto)
+            if com and termo:
+                if tipo == "IA":
+                    return self.perguntar_ia(termo)
+                p.rodar(termo, "")
+                return None
+        m = re.match(r"^([\w.-]+):(.*)$", texto)
+        if m and (url := url_atalho(m.group(1), m.group(2).strip())):
+            lancar(["xdg-open", url])
+            return None
+        for p in self.plugins:  # "dk xyz" sem resultado: avisa em vez de pesquisar no Google
+            if p.separar(texto)[0]:
+                avisar("Nada encontrado", texto, "edit-find")
+                return texto
+        lancar(["xdg-open", self.mc["busca"].format(quote(texto))])
+        return None
+
+    def rodar(self, filtro=""):
+        while True:
+            entradas = self.coletar()
+            r = rofi(self.mc, entradas, mesg=RODAPE, filtro=filtro)
+            if r is None:
+                break
+            mais_acoes, indice, digitado = r
+            if 0 <= indice < len(entradas):
+                filtro = self.executar(entradas[indice], mais_acoes, digitado)
+            else:
+                filtro = self.texto_livre(digitado)
+            if filtro is None:
+                break
+        for t in threading.enumerate():  # espera docker/git/IA terminarem antes de sair
+            if t is not threading.main_thread():
+                t.join()
+
+
+def url_atalho(chave, termo):
+    """URL de um atalho de busca (aur:, gg:...) a partir dos .desktop do KDE ou do krocket."""
+    for pasta in (DADOS / "kf6/searchproviders", Path("/usr/share/kf6/searchproviders"), AQUI / "atalhos-web"):
+        for f in pasta.glob("*.desktop") if pasta.is_dir() else []:
+            texto = f.read_text(errors="ignore")
+            chaves = re.search(r"^Keys=(.*)$", texto, re.M)
+            consulta = re.search(r"^Query=(.*)$", texto, re.M)
+            if chaves and consulta and chave in chaves.group(1).split(","):
+                usuario = subprocess.run(["git", "config", "--global", "user.name"], capture_output=True,
+                                         text=True).stdout.strip() or os.environ.get("USER", "")
+                return re.sub(r"\\+\{@\}", quote(termo), consulta.group(1)).replace("@GITHUB_USER@", usuario)
+    return None
 
 
 def main():
@@ -993,6 +1336,11 @@ def main():
         # reler os plugins. Só fechar o KRunner não serve: o Alt+Espaço não consegue abrir ele de volta.
         subprocess.run(["pkill", "-f", "python3? .*krocket$"], check=False)
         subprocess.run(["systemctl", "--user", "restart", "plasma-krunner"], capture_output=True, check=False)
+        return
+    if sys.argv[1:2] == ["menu"]:
+        if not shutil.which("rofi"):
+            sys.exit("krocket menu precisa do rofi: sudo pacman -S rofi")
+        Menu(carregar_config()).rodar(" ".join(sys.argv[2:]))
         return
     DBusGMainLoop(set_as_default=True)
     bus = dbus.SessionBus()

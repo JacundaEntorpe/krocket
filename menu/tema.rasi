@@ -1,0 +1,105 @@
+/*
+ * krocket: tema do menu (rofi)
+ * Fica em ~/.config/krocket/tema.rasi. Mude as cores e tamanhos aqui embaixo
+ * e abra o menu de novo pra ver (não precisa reiniciar nada).
+ * A cor da palavra-chave (vs, gs...) fica no config.toml: [menu] cor_palavra.
+ */
+
+* {
+    fundo:        #19191eee;   /* fundo da janela (os 2 últimos dígitos são a transparência) */
+    fundo-caixa:  #232328;     /* fundo da barra de busca e do rodapé */
+    texto:        #dcdce1;
+    apagado:      #8c8c91;     /* rodapé, dica da busca */
+    destaque:     #e92f17;     /* borda, prompt, letras que bateram com a busca */
+    selecionado:  #aa281966;   /* fundo da linha selecionada */
+
+    font:             "Noto Sans 11";
+    background-color: transparent;
+    text-color:       @texto;
+}
+
+window {
+    width:            44em;
+    location:         north;
+    anchor:           north;
+    y-offset:         18%;
+    background-color: @fundo;
+    border:           2px;
+    border-color:     @destaque;
+    border-radius:    14px;
+    padding:          14px;
+}
+
+mainbox {
+    spacing:  10px;
+    children: [ inputbar, listview, message ];
+}
+
+inputbar {
+    children:         [ prompt, entry ];
+    spacing:          12px;
+    padding:          10px 14px;
+    background-color: @fundo-caixa;
+    border-radius:    10px;
+}
+
+prompt {
+    text-color: @destaque;
+    font:       "Noto Sans Bold 11";
+}
+
+entry {
+    placeholder:       "vs, gs, dk, sv, ts, ia, hm... ou kr pra ajuda";
+    placeholder-color: @apagado;
+    cursor:            text;
+}
+
+listview {
+    lines:        9;
+    fixed-height: true;
+    spacing:      2px;
+    scrollbar:    false;
+}
+
+element {
+    padding:       8px 12px;
+    spacing:       12px;
+    border-radius: 8px;
+}
+
+element normal.normal, element alternate.normal {
+    background-color: transparent;
+}
+
+element selected.normal {
+    background-color: @selecionado;
+}
+
+element-icon {
+    size: 1.6em;
+}
+
+element-text {
+    vertical-align: 0.5;
+    highlight:      bold #feb9b6;
+}
+
+message {
+    padding:          8px 12px;
+    background-color: @fundo-caixa;
+    border-radius:    10px;
+}
+
+textbox {
+    text-color: @apagado;
+    font:       "Noto Sans 9";
+}
+
+/* janela "Perguntando pro gemma..." e mensagens de erro */
+error-message {
+    padding:          20px;
+    background-color: @fundo;
+    border:           2px;
+    border-color:     @destaque;
+    border-radius:    14px;
+}

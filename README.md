@@ -1,6 +1,6 @@
 # krocket 🚀
 
-Plugins do KRunner (KDE Plasma 6) pra quem programa. Abra com `Alt+Espaço` e digite:
+Um lançador pra quem programa: repositórios, git, Docker, serviços, Tailscale e IA local a algumas teclas de distância. No KDE Plasma 6 ele vira plugins do KRunner (`Alt+Espaço`); em qualquer outro desktop (Hyprland, GNOME, Sway...) roda como um menu do [rofi](#menu-rofi-qualquer-desktop). Os comandos são os mesmos nos dois:
 
 | Digite | O que faz | Enter |
 |---|---|---|
@@ -11,6 +11,8 @@ Plugins do KRunner (KDE Plasma 6) pra quem programa. Abra com `Alt+Espaço` e di
 | `sv` / `sv docker` | Serviços do systemd, do sistema e do usuário. `sv` sozinho mostra os favoritos | Status com as últimas linhas do log |
 | `ts` / `ts vps` | Aparelhos da rede Tailscale, online primeiro | Copia o IP |
 | `ia <pergunta>` | Pergunta pra IA local (Ollama) | Manda a pergunta; a resposta chega numa notificação e vai pra área de transferência |
+| `ia liberar` | Mostra quanto a IA está ocupando de RAM/VRAM | Tira o modelo da memória na hora (bom antes de jogar) |
+| `hm <tarefa>` | Manda uma tarefa pro [Hermes](https://github.com/NousResearch/hermes-agent), o agente que mexe no PC | Abre no terminal, pra acompanhar e aprovar o que ele fizer |
 
 Sem a palavra-chave, só os repositórios aparecem (a partir de 3 letras e quando o nome bate bem), pra não poluir a busca normal. A busca entende acentos e abreviações: `fishd` acha `Fishdle`, `vs pkcs` acha `PokeCroc_Server`, `vs poke client` filtra pelo caminho. As pastas abertas no VS Code nos últimos 30 dias sobem na lista.
 
@@ -24,6 +26,7 @@ Cada resultado tem botões de ação ao lado (passe o mouse, ou selecione e use 
 - **Serviço:** logs ao vivo, reiniciar, parar, iniciar. Serviço do sistema pede a senha numa janela do KDE.
 - **Tailscale:** SSH, copiar o nome MagicDNS, abrir no navegador, ping. O usuário do SSH por aparelho fica na config.
 - **IA:** continuar a conversa no Open WebUI. Digitar a mesma pergunta de novo mostra a resposta ali no KRunner (Enter copia).
+- **Hermes:** rodar em segundo plano, com a resposta numa notificação (pra tarefas que não pedem aprovação).
 
 Start/stop/restart, pull/push e a IA avisam numa notificação quando terminam.
 
@@ -45,9 +48,31 @@ Esses se somam aos que já vêm no KDE (`gg:` Google, `yt:` YouTube, `wp:` Wikip
 - `kr` é a ajuda do krocket. Escolher um comando abre o KRunner só com os resultados daquele plugin, sem apps e arquivos misturados.
 - `?` é a ajuda do próprio KRunner, com todos os plugins instalados e a sintaxe de cada um (os do krocket aparecem lá também).
 
+## Menu rofi (qualquer desktop)
+
+`krocket menu` abre os mesmos comandos num menu do rofi. Funciona no X11 e no Wayland, então serve pra Hyprland, Sway, GNOME, i3... e também no KDE, se você preferir ele ao KRunner.
+
+- **Digite** pra filtrar: `vs poke`, `gs`, `dk ani`, `sv docker`, `ts vps`. Sem palavra-chave ele busca em tudo de uma vez (`poke` acha repositórios e containers).
+- **Enter** faz a ação padrão, igual no KRunner. **Shift+Enter** abre a lista de ações (terminal, Claude Code, pull, logs, restart...).
+- **Texto solto + Enter:** `ia <pergunta>` responde ali no menu, `hm <tarefa>` manda pro Hermes, `aur:yay` usa um atalho de busca, e qualquer outra coisa vai pro Google. Se o texto bater com algum item mas você quiser mandar ele mesmo assim, use **Ctrl+Enter**.
+- `kr` mostra a ajuda; escolher um comando reabre o menu já filtrado nele.
+
+Pra ligar a uma tecla:
+
+| Desktop | Como |
+|---|---|
+| KDE | `./instalar.sh --atalho Meta+Space` (vale depois de sair e entrar na sessão), ou Configurações do Sistema → Atalhos → Adicionar aplicativo → krocket |
+| Hyprland | `bind = SUPER, SPACE, exec, krocket menu` no `hyprland.conf` |
+| Sway / i3 | `bindsym $mod+space exec krocket menu` |
+| GNOME | Configurações → Teclado → Atalhos personalizados → comando `krocket menu` |
+
+O visual fica em `~/.config/krocket/tema.rasi`: cores, transparência, tamanho, fonte e quantas linhas aparecem, tudo comentado no topo do arquivo. Mudou, abriu de novo, já está valendo.
+
+Fora do KDE, defina o terminal na config (`terminal = "kitty"`, `"foot"`, `"alacritty"`...); kitty, foot, alacritty, wezterm, gnome-terminal e xterm já são entendidos. Pra copiar, precisa do `wl-clipboard` (Wayland) ou `xclip` (X11).
+
 ## Instalar
 
-Precisa de `python-dbus` e `python-gobject` (no Arch: `sudo pacman -S --needed python-dbus python-gobject`). Cada plugin só usa o que estiver instalado: sem Docker, Tailscale ou Ollama, o plugin correspondente fica quieto.
+Precisa de `python-dbus` e `python-gobject` (no Arch: `sudo pacman -S --needed python-dbus python-gobject`). Pro menu: `rofi`, e `wl-clipboard` ou `xclip`. Cada plugin só usa o que estiver instalado: sem Docker, Tailscale, Ollama ou Hermes, o plugin correspondente fica quieto.
 
 ```bash
 git clone https://github.com/JacundaEntorpe/krocket.git ~/Projetos/krocket
@@ -68,14 +93,16 @@ krocket --testar "vs poke"
 
 ## Como funciona
 
-O KRunner conversa com plugins externos pela interface D-Bus `org.kde.krunner1`. O `krocket` é um script Python que expõe um objeto por plugin nesse serviço (`/repos`, `/git`, `/docker`, `/servicos`, `/tailscale`, `/ia`, `/ajuda`). O `.service` em `~/.local/share/dbus-1/services/` faz o D-Bus subir o script sozinho na primeira busca, então não há nada pra deixar rodando no boot.
+O KRunner conversa com plugins externos pela interface D-Bus `org.kde.krunner1`. O `krocket` é um script Python que expõe um objeto por plugin nesse serviço (`/repos`, `/git`, `/docker`, `/servicos`, `/tailscale`, `/ia`, `/hermes`, `/ajuda`). O `krocket menu` usa as mesmas classes direto, sem D-Bus, e mostra tudo no rofi. O `.service` em `~/.local/share/dbus-1/services/` faz o D-Bus subir o script sozinho na primeira busca, então não há nada pra deixar rodando no boot.
 
 | Arquivo | Vai pra |
 |---|---|
 | `krocket` | `~/.local/bin/krocket` (link) |
 | `dbus/*.service.in` | `~/.local/share/dbus-1/services/` |
-| `plugins/*.desktop` | `~/.local/share/krunner/dbusplugins/` |
+| `plugins/*.desktop` | `~/.local/share/krunner/dbusplugins/` (só no KDE) |
 | `atalhos-web/*.desktop` | `~/.local/share/kf6/searchproviders/` |
+| `menu/tema.rasi` | `~/.config/krocket/tema.rasi` (cópia, só se não existir) |
+| — | `~/.local/share/applications/krocket.desktop` (o menu aparece entre os apps) |
 
 Os repositórios são varridos a cada 2 minutos em segundo plano, lendo direto a pasta `.git` (branch e remote) sem chamar o git, pra busca continuar instantânea. A lista do Docker fica em cache por 3 segundos.
 

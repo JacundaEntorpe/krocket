@@ -15,4 +15,4 @@ X-Plasma-DBusRunner-Path=/ia
 X-Plasma-Request-Actions-Once=true
 X-Plasma-Runner-Min-Letter-Count=2
 X-Plasma-Runner-Syntaxes=ia :q:
-X-Plasma-Runner-Syntax-Descriptions=Pergunta :q: pra IA local; Enter manda
+X-Plasma-Runner-Syntax-Descriptions=Pergunta :q: pra IA local; "ia liberar" tira o modelo da memória

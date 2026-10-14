@@ -10,7 +10,7 @@ profundidade = 4        # quantas pastas pra dentro ele procura .git
 ignorar = ["node_modules", "vendor", "build", "dist", "target", "venv", "__pycache__"]
 recentes_vscode = true  # inclui pastas abertas no VS Code mesmo sem git
 editor = "code"         # "codium", "code --new-window", "kate"...
-terminal = "konsole"
+terminal = "konsole"     # "kitty", "alacritty", "foot"...
 arquivos = "dolphin"
 claude = "claude"       # comando da ação "Abrir o Claude Code aqui"
 reescanear = 120        # segundos entre uma varredura e outra
@@ -44,5 +44,16 @@ copiar_resposta = true           # a resposta já vai pra área de transferênci
 manter_carregado = "5m"          # quanto tempo o modelo fica na memória depois de responder
 instrucoes = "Responda em português do Brasil, curto e direto (no máximo 3 frases). Se a pergunta pedir um comando, responda só com o comando, sem crases."
 
+[hermes]
+palavra = "hm"
+comando = "hermes"
+terminal = "konsole"
+
 [ajuda]
 palavra = "kr"
+
+[menu]                  # krocket menu (rofi)
+tema = "~/.config/krocket/tema.rasi"   # cores, tamanho e fonte ficam nesse arquivo
+icones = ""             # tema de ícones; vazio = o mesmo do desktop
+cor_palavra = "#e92f17" # cor do vs, gs, dk... no começo de cada linha
+busca = "https://www.google.com/search?q={}"  # texto solto + Enter pesquisa aqui
