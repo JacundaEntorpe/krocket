@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """krocket: plugins do KRunner (Plasma 6) pra quem programa.
 
+  kr          mostra todos os comandos do krocket (Enter abre o comando)
   vs <nome>   acha repositórios git e pastas recentes do VS Code e abre no editor
-  dk <nome>   lista containers Docker: logs, shell, start/stop/restart
+  gs [nome]   repositórios com alterações, commits sem push ou atrás do remote
+  dk [nome]   containers Docker: logs, shell, start/stop/restart
+  sv [nome]   serviços do systemd: status, logs, start/stop/restart
+  ts [nome]   aparelhos da rede Tailscale: copiar IP, SSH, ping
+  ia <texto>  pergunta pra IA local (Ollama); a resposta chega numa notificação
 
 Roda como um serviço D-Bus (org.kde.krunner1). O KRunner sobe ele sozinho pela
 ativação do D-Bus; não precisa deixar rodando. Config: ~/.config/krocket/config.toml
@@ -18,8 +23,11 @@ import threading
 import time
 import tomllib
 import unicodedata
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import dbus
 import dbus.service
@@ -29,6 +37,7 @@ from gi.repository import GLib
 SERVICO = "org.jacunda.krocket"
 IFACE = "org.kde.krunner1"
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "krocket" / "config.toml"
+DADOS = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
 VSCODE_STORAGE = Path.home() / ".config/Code/User/workspaceStorage"
 
 # Relevância que o KRunner entende (KRunner::QueryMatch::CategoryRelevance)
@@ -45,12 +54,29 @@ PADRAO = {
         "editor": "code",
         "terminal": "konsole",
         "arquivos": "dolphin",
+        "claude": "claude",
         "reescanear": 120,  # segundos
     },
-    "docker": {
-        "palavra": "dk",
+    "git": {"palavra": "gs"},
+    "docker": {"palavra": "dk", "terminal": "konsole"},
+    "servicos": {
+        "palavra": "sv",
         "terminal": "konsole",
+        "favoritos": ["docker", "tailscaled", "ollama", "bluetooth", "firewalld",
+                      "app-dev.lizardbyte.app.Sunshine", "ani-presence"],
     },
+    "tailscale": {"palavra": "ts", "terminal": "konsole", "usuarios": {}},
+    "ia": {
+        "palavra": "ia",
+        "modelo": "gemma4:26b",
+        "url": "http://localhost:11434",
+        "webui": "http://localhost:8080",
+        "copiar_resposta": True,
+        "manter_carregado": "5m",
+        "instrucoes": "Responda em português do Brasil, curto e direto (no máximo 3 frases). "
+                      "Se a pergunta pedir um comando, responda só com o comando, sem crases.",
+    },
+    "ajuda": {"palavra": "kr"},
 }
 
 
@@ -80,33 +106,124 @@ def til(p):
     return "~" + p[len(casa):] if p.startswith(casa) else p
 
 
-def lancar(cmd, cwd=None):
-    subprocess.Popen(cmd, cwd=cwd, start_new_session=True,
+def lancar(cmd, cwd=None, env=None):
+    subprocess.Popen(cmd, cwd=cwd, env=env, start_new_session=True,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def avisar(titulo, texto="", icone="dialog-information"):
-    if shutil.which("notify-send"):
-        lancar(["notify-send", "-a", "KRunner", "-i", icone, titulo, texto])
+def no_terminal(terminal, args, cwd=None, segurar=False):
+    """Roda args num terminal novo. segurar=True deixa a janela aberta quando o comando termina."""
+    term = shlex.split(terminal)
+    if "konsole" in term[0]:
+        extra = (["--workdir", cwd] if cwd else []) + (["--hold"] if segurar else [])
+        lancar(term + extra + (["-e"] + args if args else []), cwd=cwd)
+    else:
+        lancar(term + (["-e"] + args if args else []), cwd=cwd)
 
 
-def copiar(texto):
+def avisar(titulo, texto="", icone="dialog-information", substituir=None):
+    """Mostra uma notificação e devolve o id dela (pra substituir depois)."""
+    if not shutil.which("notify-send"):
+        return None
+    cmd = ["notify-send", "-a", "krocket", "-i", icone, "-p"]
+    if substituir:
+        cmd += ["-r", str(substituir)]
+    r = subprocess.run(cmd + [titulo, texto], capture_output=True, text=True)
+    return r.stdout.strip() or None
+
+
+def copiar(texto, aviso=True):
     try:
         klipper = dbus.SessionBus().get_object("org.kde.klipper", "/klipper")
         klipper.setClipboardContents(texto, dbus_interface="org.kde.klipper.klipper")
-        avisar("Copiado", texto, "edit-copy")
+        if aviso:
+            avisar("Copiado", texto, "edit-copy")
     except dbus.DBusException:
         if shutil.which("wl-copy"):
             subprocess.run(["wl-copy", texto])
 
 
-def resultado(id_, texto, icone, relevancia, nota, subtexto="", acoes=None, urls=None):
+def abrir_krunner(texto, plugin=None):
+    """Abre o KRunner já com um texto digitado (usado pelo kr). Com plugin, mostra só os
+    resultados dele, sem apps e arquivos misturados."""
+    def abrir():
+        try:
+            app = dbus.SessionBus().get_object("org.kde.krunner", "/App")
+            if plugin:
+                app.querySingleRunner(plugin, texto, dbus_interface="org.kde.krunner.App")
+            else:
+                app.query(texto, dbus_interface="org.kde.krunner.App")
+        except dbus.DBusException:
+            pass
+        return False
+    GLib.timeout_add(250, abrir)  # espera o KRunner fechar depois do Enter
+
+
+def resultado(id_, texto, icone, relevancia, nota, subtexto="", acoes=None, urls=None, multilinha=False):
     props = {"subtext": subtexto}
     if acoes is not None:
         props["actions"] = dbus.Array(acoes, signature="s")
     if urls:
         props["urls"] = dbus.Array(urls, signature="s")
+    if multilinha:
+        props["multiline"] = True
     return (id_, texto, icone, relevancia, float(nota), dbus.Dictionary(props, signature="sv"))
+
+
+def tempo_atras(segundos):
+    for limite, nome in ((86400, "d"), (3600, "h"), (60, "min")):
+        if segundos >= limite:
+            return f"{int(segundos // limite)}{nome}"
+    return "agora"
+
+
+class Plugin(dbus.service.Object):
+    """Base: cuida da palavra-chave e da conversa com o KRunner. Cada plugin implementa
+    buscar(termo, com_palavra) e rodar(id, acao)."""
+    CAMINHO = ""
+    ID = ""  # X-KDE-PluginInfo-Name do .desktop
+    ACOES = []
+    SEM_PALAVRA = False  # True se o plugin também responde sem a palavra-chave
+    DESCRICAO = ""
+    ICONE = "system-run"
+
+    def __init__(self, bus, cfg):
+        super().__init__(bus, self.CAMINHO)
+        self.cfg = cfg
+
+    def separar(self, query):
+        q = query.strip()
+        palavra = self.cfg["palavra"]
+        if q == palavra or q.startswith(palavra + " "):
+            return True, q[len(palavra):].strip()
+        return False, q
+
+    @dbus.service.method(IFACE, in_signature="s", out_signature="a(sssida{sv})")
+    def Match(self, query):
+        com_palavra, termo = self.separar(query)
+        if not com_palavra and not self.SEM_PALAVRA:
+            return []
+        try:
+            return self.buscar(termo, com_palavra)
+        except Exception as e:  # um erro num plugin não pode derrubar o serviço inteiro
+            print(f"krocket {self.CAMINHO}: {e!r}", file=sys.stderr)
+            return []
+
+    @dbus.service.method(IFACE, out_signature="a(sss)")
+    def Actions(self):
+        return self.ACOES
+
+    @dbus.service.method(IFACE, in_signature="ss")
+    def Run(self, id_, acao):
+        if id_:
+            self.rodar(id_, acao)
+
+    @dbus.service.method(IFACE)
+    def Teardown(self):
+        self.fechou()
+
+    def fechou(self):
+        pass
 
 
 # ---------------------------------------------------------------- repositórios
@@ -192,17 +309,47 @@ def recentes_vscode():
     return recentes
 
 
-class Repos(dbus.service.Object):
+def git_rodar(caminho, *args, timeout=60):
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")  # nunca fica esperando senha
+    return subprocess.run(["git", "-C", caminho, *args], capture_output=True, text=True, env=env, timeout=timeout)
+
+
+def git_em_segundo_plano(caminho, verbo, depois=None):
+    """git pull/push com notificação no fim."""
+    def rodar():
+        nome = Path(caminho).name
+        args = ["pull", "--ff-only"] if verbo == "pull" else [verbo]
+        try:
+            r = git_rodar(caminho, *args)
+            ok, saida = r.returncode == 0, (r.stdout + r.stderr).strip()
+        except subprocess.TimeoutExpired:
+            ok, saida = False, "demorou demais"
+        if ok:
+            avisar(f"{nome}: git {verbo} ok", saida.splitlines()[-1] if saida else "", "vcs-normal")
+        else:
+            avisar(f"{nome}: git {verbo} falhou", saida[-400:], "dialog-error")
+        if depois:
+            depois()
+    threading.Thread(target=rodar, daemon=True).start()
+
+
+class Repos(Plugin):
+    CAMINHO = "/repos"
+    ID = "krocket-repos"
+    SEM_PALAVRA = True
+    DESCRICAO = "Abre um repositório no VS Code"
+    ICONE = "folder-git"
     ACOES = [
         ("terminal", "Abrir no terminal", "utilities-terminal"),
+        ("claude", "Abrir o Claude Code aqui", "dialog-messages"),
         ("pasta", "Abrir no gerenciador de arquivos", "system-file-manager"),
         ("web", "Abrir o remote no navegador", "internet-web-browser"),
+        ("pull", "git pull", "vcs-pull"),
         ("copiar", "Copiar o caminho", "edit-copy"),
     ]
 
     def __init__(self, bus, cfg):
-        super().__init__(bus, "/repos")
-        self.cfg = cfg
+        super().__init__(bus, cfg)
         self.itens = {}  # caminho -> dict
         self.escaneado = 0
         self.trava = threading.Lock()
@@ -232,6 +379,11 @@ class Repos(dbus.service.Object):
             self.escaneado = time.time()  # evita disparar duas vezes
             threading.Thread(target=self.escanear, daemon=True).start()
 
+    def lista(self):
+        self.talvez_reescanear()
+        with self.trava:
+            return dict(self.itens)
+
     @staticmethod
     def pontuar(termo, item):
         nome, caminho = item["busca_nome"], item["busca_caminho"]
@@ -250,21 +402,13 @@ class Repos(dbus.service.Object):
                 return 0.5
         return 0
 
-    @dbus.service.method(IFACE, in_signature="s", out_signature="a(sssida{sv})")
-    def Match(self, query):
-        c = self.cfg
-        q = query.strip()
-        palavra = c["palavra"]
-        com_palavra = q == palavra or q.startswith(palavra + " ")
-        termo = normalizar(q[len(palavra):].strip() if com_palavra else q)
-        if not com_palavra and len(termo) < c["minimo"]:
+    def buscar(self, termo, com_palavra):
+        termo = normalizar(termo)
+        if not com_palavra and len(termo) < self.cfg["minimo"]:
             return []
-        self.talvez_reescanear()
-        with self.trava:
-            itens = list(self.itens.items())
         agora = time.time()
         achados = []
-        for caminho, item in itens:
+        for caminho, item in self.lista().items():
             if termo:
                 nota = self.pontuar(termo, item)
                 if nota == 0 or (not com_palavra and nota < 0.8):
@@ -283,41 +427,175 @@ class Repos(dbus.service.Object):
             if not item["git"]:
                 extra.append("recente do VS Code")
             sub = til(caminho) + ("  ·  " + "  ·  ".join(extra) if extra else "")
-            acoes = ["terminal", "pasta"] + (["web"] if item["web"] else []) + ["copiar"]
-            icone = "vscode" if not item["git"] else "folder-git"
+            acoes = ["terminal", "claude", "pasta"] + (["web", "pull"] if item["web"] else []) + ["copiar"]
+            icone = "folder-git" if item["git"] else "vscode"
             saida.append(resultado(caminho, item["nome"], icone, ALTA if com_palavra else MEDIA,
                                    min(nota, 1.0), sub, acoes, ["file://" + caminho]))
         return saida
 
-    @dbus.service.method(IFACE, out_signature="a(sss)")
-    def Actions(self):
-        return self.ACOES
+    def rodar(self, caminho, acao):
+        abrir_repo(self.cfg, caminho, acao, self.itens.get(caminho, {}).get("web"))
 
-    @dbus.service.method(IFACE, in_signature="ss")
-    def Run(self, caminho, acao):
-        c = self.cfg
-        if acao == "terminal":
-            lancar(shlex.split(c["terminal"]) + ["--workdir", caminho] if "konsole" in c["terminal"]
-                   else shlex.split(c["terminal"]), cwd=caminho)
-        elif acao == "pasta":
-            lancar(shlex.split(c["arquivos"]) + [caminho])
-        elif acao == "web":
-            web = self.itens.get(caminho, {}).get("web")
-            if web:
-                lancar(["xdg-open", web])
-        elif acao == "copiar":
-            copiar(caminho)
-        else:
-            lancar(shlex.split(c["editor"]) + [caminho], cwd=caminho)
 
-    @dbus.service.method(IFACE)
-    def Teardown(self):
-        self.talvez_reescanear()
+def abrir_repo(c, caminho, acao, web=None):
+    """Ações de repositório, compartilhadas entre o vs e o gs."""
+    if acao == "terminal":
+        no_terminal(c["terminal"], [], cwd=caminho)
+    elif acao == "claude":
+        no_terminal(c["terminal"], shlex.split(c["claude"]), cwd=caminho)
+    elif acao == "pasta":
+        lancar(shlex.split(c["arquivos"]) + [caminho])
+    elif acao == "web":
+        if web:
+            lancar(["xdg-open", web])
+    elif acao in ("pull", "push"):
+        git_em_segundo_plano(caminho, acao)
+    elif acao == "copiar":
+        copiar(caminho)
+    else:
+        lancar(shlex.split(c["editor"]) + [caminho], cwd=caminho)
+
+
+# ---------------------------------------------------------------- git status
+
+def ler_status(caminho):
+    """Resumo do `git status`: alterados, novos, à frente/atrás do upstream (do último fetch)."""
+    try:
+        r = git_rodar(caminho, "status", "--porcelain=v2", "--branch", timeout=5)
+    except subprocess.TimeoutExpired:
+        return None
+    if r.returncode != 0:
+        return None
+    st = {"branch": None, "upstream": False, "frente": 0, "atras": 0, "alterados": 0, "novos": 0}
+    for linha in r.stdout.splitlines():
+        if linha.startswith("# branch.head "):
+            st["branch"] = linha.split(" ", 2)[2]
+        elif linha.startswith("# branch.upstream "):
+            st["upstream"] = True
+        elif linha.startswith("# branch.ab "):
+            m = re.match(r"# branch\.ab \+(\d+) -(\d+)", linha)
+            if m:
+                st["frente"], st["atras"] = int(m.group(1)), int(m.group(2))
+        elif linha.startswith("?"):
+            st["novos"] += 1
+        elif linha and not linha.startswith("#"):
+            st["alterados"] += 1
+    st["pendente"] = bool(st["alterados"] or st["novos"] or st["frente"] or st["atras"])
+    return st
+
+
+class Git(Plugin):
+    CAMINHO = "/git"
+    ID = "krocket-git"
+    DESCRICAO = "Repositórios com alterações, commits sem push ou atrasados"
+    ICONE = "vcs-locally-modified"
+    ACOES = [
+        ("terminal", "Abrir no terminal", "utilities-terminal"),
+        ("claude", "Abrir o Claude Code aqui", "dialog-messages"),
+        ("pull", "git pull", "vcs-pull"),
+        ("push", "git push", "vcs-push"),
+        ("web", "Abrir o remote no navegador", "internet-web-browser"),
+    ]
+
+    def __init__(self, bus, cfg, repos):
+        super().__init__(bus, cfg)
+        self.repos = repos
+        self.status, self.quando = {}, 0
+        self.trava = threading.Lock()
+
+    def atualizar(self):
+        if time.time() - self.quando < 15:
+            return self.status
+        with self.trava:
+            if time.time() - self.quando < 15:
+                return self.status
+            caminhos = [c for c, i in self.repos.lista().items() if i["git"]]
+            with ThreadPoolExecutor(8) as ex:
+                self.status = dict(zip(caminhos, ex.map(ler_status, caminhos)))
+            self.quando = time.time()
+        return self.status
+
+    def buscar(self, termo, com_palavra):
+        termo = normalizar(termo)
+        itens = self.repos.lista()
+        saida = []
+        for caminho, st in self.atualizar().items():
+            if not st or caminho not in itens:
+                continue
+            nome = itens[caminho]["nome"]
+            if termo and termo not in normalizar(nome):
+                continue
+            if not termo and not st["pendente"]:
+                continue
+            partes = [st["branch"] or "?"]
+            if st["alterados"]:
+                partes.append(f"{st['alterados']} alterado{'s' if st['alterados'] > 1 else ''}")
+            if st["novos"]:
+                partes.append(f"{st['novos']} novo{'s' if st['novos'] > 1 else ''}")
+            if st["frente"]:
+                partes.append(f"↑{st['frente']} sem push")
+            if st["atras"]:
+                partes.append(f"↓{st['atras']} pra puxar")
+            if not st["pendente"]:
+                partes.append("em dia")
+            if st["upstream"] is False:
+                partes.append("sem upstream")
+            if st["atras"]:
+                icone = "vcs-update-required"
+            elif st["alterados"] or st["novos"]:
+                icone = "vcs-locally-modified"
+            elif st["frente"]:
+                icone = "vcs-push"
+            else:
+                icone = "vcs-normal"
+            acoes = ["terminal", "claude"]
+            if st["upstream"]:
+                acoes += ["pull", "push"]
+            if itens[caminho]["web"]:
+                acoes.append("web")
+            nota = 0.9 if st["pendente"] else 0.5
+            saida.append(resultado(caminho, nome, icone, ALTA, nota, "  ·  ".join(partes), acoes))
+        if not saida and not termo:
+            saida.append(resultado("", "Tudo em dia", "vcs-normal", ALTA, 1.0,
+                                   f"{len(self.status)} repositórios sem alteração nem commit pendente"))
+        if not termo:
+            saida.append(resultado("@fetch", "Buscar atualizações de todos (git fetch)", "vcs-pull", ALTA, 0.1,
+                                   "Atualiza o ↓ de cada repositório, sem mexer nos seus arquivos"))
+        saida.sort(key=lambda r: -r[4])
+        return saida
+
+    def rodar(self, caminho, acao):
+        if caminho == "@fetch":
+            threading.Thread(target=self.buscar_todos, daemon=True).start()
+            return
+        self.quando = 0
+        abrir_repo(self.repos.cfg, caminho, acao, self.repos.itens.get(caminho, {}).get("web"))
+
+    def buscar_todos(self):
+        id_ = avisar("git fetch", "Buscando atualizações de todos os repositórios...", "vcs-pull")
+        caminhos = [c for c, st in self.atualizar().items() if st and st["upstream"]]
+
+        def fetch(c):
+            try:
+                return git_rodar(c, "fetch", "--quiet", timeout=60).returncode == 0
+            except subprocess.TimeoutExpired:
+                return False
+        with ThreadPoolExecutor(6) as ex:
+            ok = list(ex.map(fetch, caminhos))
+        self.quando = 0
+        atrasados = [Path(c).name for c, st in self.atualizar().items() if st and st["atras"]]
+        texto = f"{sum(ok)} de {len(ok)} atualizados."
+        texto += f" Pra puxar: {', '.join(atrasados)}" if atrasados else " Nada novo pra puxar."
+        avisar("git fetch terminou", texto, "vcs-normal", substituir=id_)
 
 
 # ---------------------------------------------------------------- docker
 
-class Docker(dbus.service.Object):
+class Docker(Plugin):
+    CAMINHO = "/docker"
+    ID = "krocket-docker"
+    DESCRICAO = "Containers Docker: logs, shell, start/stop/restart"
+    ICONE = "docker"
     ACOES = [
         ("logs", "Ver os logs", "view-list-text"),
         ("shell", "Abrir um shell dentro", "utilities-terminal"),
@@ -328,8 +606,7 @@ class Docker(dbus.service.Object):
     ]
 
     def __init__(self, bus, cfg):
-        super().__init__(bus, "/docker")
-        self.cfg = cfg
+        super().__init__(bus, cfg)
         self.cache, self.quando = [], 0
         self.estados = {}
 
@@ -345,13 +622,8 @@ class Docker(dbus.service.Object):
         self.cache, self.quando = lista, time.time()
         return lista
 
-    @dbus.service.method(IFACE, in_signature="s", out_signature="a(sssida{sv})")
-    def Match(self, query):
-        q = query.strip()
-        palavra = self.cfg["palavra"]
-        if not (q == palavra or q.startswith(palavra + " ")):
-            return []
-        termo = normalizar(q[len(palavra):].strip())
+    def buscar(self, termo, com_palavra):
+        termo = normalizar(termo)
         saida = []
         for c in self.containers():
             nome = c.get("Names", "")
@@ -371,10 +643,6 @@ class Docker(dbus.service.Object):
         saida.sort(key=lambda r: -r[4])
         return saida[:15]
 
-    @dbus.service.method(IFACE, out_signature="a(sss)")
-    def Actions(self):
-        return self.ACOES
-
     def comando(self, nome, verbo):
         r = subprocess.run(["docker", verbo, nome], capture_output=True, text=True)
         if r.returncode == 0:
@@ -383,24 +651,340 @@ class Docker(dbus.service.Object):
             avisar(f"{nome}: {verbo} falhou", r.stderr.strip()[:300], "dialog-error")
         self.quando = 0
 
-    @dbus.service.method(IFACE, in_signature="ss")
-    def Run(self, nome, acao):
-        term = shlex.split(self.cfg["terminal"])
+    def rodar(self, nome, acao):
+        term = self.cfg["terminal"]
         if not acao:  # Enter: logs se está rodando, start se está parado
             acao = "logs" if self.estados.get(nome, True) else "start"
         if acao == "logs":
-            lancar(term + ["-e", "docker", "logs", "-f", "--tail", "300", nome])
+            no_terminal(term, ["docker", "logs", "-f", "--tail", "300", nome])
         elif acao == "shell":
-            lancar(term + ["-e", "docker", "exec", "-it", nome, "sh", "-c",
-                           "command -v bash >/dev/null && exec bash || exec sh"])
+            no_terminal(term, ["docker", "exec", "-it", nome, "sh", "-c",
+                               "command -v bash >/dev/null && exec bash || exec sh"])
         elif acao in ("start", "stop", "restart"):
             threading.Thread(target=self.comando, args=(nome, acao), daemon=True).start()
         elif acao == "copiar":
             copiar(nome)
 
-    @dbus.service.method(IFACE)
-    def Teardown(self):
+    def fechou(self):
         self.quando = 0
+
+
+# ---------------------------------------------------------------- systemd
+
+class Servicos(Plugin):
+    CAMINHO = "/servicos"
+    ID = "krocket-servicos"
+    DESCRICAO = "Serviços do systemd: status, logs, start/stop/restart"
+    ICONE = "preferences-system-services"
+    ACOES = [
+        ("logs", "Ver os logs ao vivo", "view-list-text"),
+        ("restart", "Reiniciar", "view-refresh"),
+        ("stop", "Parar", "media-playback-stop"),
+        ("start", "Iniciar", "media-playback-start"),
+    ]
+
+    def __init__(self, bus, cfg):
+        super().__init__(bus, cfg)
+        self.cache, self.quando = {}, 0
+
+    @staticmethod
+    def listar(usuario):
+        base = ["systemctl"] + (["--user"] if usuario else [])
+        unidades = {}
+        try:
+            r = subprocess.run(base + ["list-unit-files", "--type=service,timer", "-o", "json"],
+                               capture_output=True, text=True, timeout=3)
+            for u in json.loads(r.stdout or "[]"):
+                if "@" not in u["unit_file"]:  # templates (foo@.service) não dá pra iniciar direto
+                    unidades[u["unit_file"]] = {"habilitado": u["state"], "ativo": "inactive", "sub": "dead", "desc": ""}
+            r = subprocess.run(base + ["list-units", "--type=service,timer", "--all", "-o", "json"],
+                               capture_output=True, text=True, timeout=3)
+            for u in json.loads(r.stdout or "[]"):
+                if u["load"] == "not-found":
+                    continue
+                d = unidades.setdefault(u["unit"], {"habilitado": "", "ativo": "", "sub": "", "desc": ""})
+                d.update(ativo=u["active"], sub=u["sub"], desc=u["description"])
+        except (OSError, subprocess.TimeoutExpired, ValueError, KeyError):
+            pass
+        return unidades
+
+    def unidades(self):
+        if time.time() - self.quando > 5:
+            todas = {}
+            for usuario in (False, True):
+                for nome, d in self.listar(usuario).items():
+                    d["usuario"] = usuario
+                    todas[("user:" if usuario else "system:") + nome] = d
+            self.cache, self.quando = todas, time.time()
+        return self.cache
+
+    def buscar(self, termo, com_palavra):
+        termo = normalizar(termo)
+        favoritos = [normalizar(f) for f in self.cfg["favoritos"]]
+        achados = []
+        for id_, d in self.unidades().items():
+            unidade = id_.split(":", 1)[1]
+            base = normalizar(unidade.rsplit(".", 1)[0])
+            fav = base in favoritos
+            if termo:
+                if base == termo:
+                    nota = 1.0
+                elif base.startswith(termo):
+                    nota = 0.8
+                elif termo in base or termo in normalizar(d["desc"]):
+                    nota = 0.6
+                else:
+                    continue
+                nota += 0.1 if fav else 0
+            elif fav:
+                nota = 1 - favoritos.index(base) * 0.01
+            else:
+                continue
+            achados.append((nota, id_, unidade, d))
+        achados.sort(key=lambda a: -a[0])
+        saida = []
+        for nota, id_, unidade, d in achados[:12]:
+            ativo = d["ativo"] == "active"
+            estado = f"{d['ativo']} ({d['sub']})" if d["sub"] else d["ativo"]
+            partes = [estado, d["habilitado"], "usuário" if d["usuario"] else "sistema", d["desc"]]
+            acoes = ["logs", "restart", "stop"] if ativo else ["start", "logs"]
+            if d["ativo"] == "failed":
+                icone = "dialog-error"
+            else:
+                icone = "media-playback-start" if ativo else "media-playback-stopped"
+            saida.append(resultado(id_, unidade, icone, ALTA, min(nota, 1.0),
+                                   "  ·  ".join(p for p in partes if p), acoes))
+        return saida
+
+    def rodar(self, id_, acao):
+        escopo, unidade = id_.split(":", 1)
+        usuario = escopo == "user"
+        base = ["systemctl"] + (["--user"] if usuario else [])
+        term = self.cfg["terminal"]
+        if acao == "logs":
+            no_terminal(term, ["journalctl", "--user-unit" if usuario else "-u", unidade, "-f", "-n", "200"])
+        elif acao in ("start", "stop", "restart"):
+            def rodar():
+                # serviço do sistema: o polkit do KDE pede a senha numa janela
+                r = subprocess.run(base + [acao, unidade], capture_output=True, text=True)
+                if r.returncode == 0:
+                    avisar(f"{unidade}: {acao} ok", "", "preferences-system-services")
+                else:
+                    avisar(f"{unidade}: {acao} falhou", r.stderr.strip()[:300], "dialog-error")
+                self.quando = 0
+            threading.Thread(target=rodar, daemon=True).start()
+        else:  # Enter: status completo (com as últimas linhas do log)
+            no_terminal(term, base + ["status", "--no-pager", "-n", "30", unidade], segurar=True)
+
+    def fechou(self):
+        self.quando = 0
+
+
+# ---------------------------------------------------------------- tailscale
+
+class Tailscale(Plugin):
+    CAMINHO = "/tailscale"
+    ID = "krocket-tailscale"
+    DESCRICAO = "Aparelhos da rede Tailscale: copiar IP, SSH, ping"
+    ICONE = "network-vpn"
+    ACOES = [
+        ("ssh", "SSH", "utilities-terminal"),
+        ("dns", "Copiar o nome (MagicDNS)", "edit-copy"),
+        ("navegador", "Abrir no navegador", "internet-web-browser"),
+        ("ping", "Ping", "network-wired"),
+    ]
+
+    def __init__(self, bus, cfg):
+        super().__init__(bus, cfg)
+        self.cache, self.quando = {}, 0
+
+    def aparelhos(self):
+        if time.time() - self.quando < 10:
+            return self.cache
+        aparelhos = {}
+        try:
+            r = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=3)
+            d = json.loads(r.stdout)
+            for p, eu in [(d["Self"], True)] + [(p, False) for p in (d.get("Peer") or {}).values()]:
+                if not p.get("TailscaleIPs"):
+                    continue
+                aparelhos[p["TailscaleIPs"][0]] = {
+                    "nome": p.get("HostName", "?"), "dns": p.get("DNSName", "").rstrip("."),
+                    "so": p.get("OS", ""), "online": p.get("Online", False) or eu, "eu": eu,
+                    "visto": p.get("LastSeen", ""),
+                }
+        except (OSError, subprocess.TimeoutExpired, ValueError, KeyError):
+            pass
+        self.cache, self.quando = aparelhos, time.time()
+        return aparelhos
+
+    def buscar(self, termo, com_palavra):
+        termo = normalizar(termo)
+        saida = []
+        for ip, a in self.aparelhos().items():
+            alvo = normalizar(f"{a['nome']} {a['dns']} {ip} {a['so']}")
+            if termo and termo not in alvo:
+                continue
+            partes = [ip, a["so"], "este PC" if a["eu"] else ("online" if a["online"] else "offline"), a["dns"]]
+            celular = a["so"] in ("android", "iOS")
+            icone = ("smartphone" if celular else "computer") if a["online"] else "network-disconnect"
+            acoes = ["dns", "navegador", "ping"] if celular else ["ssh", "dns", "navegador", "ping"]
+            nota = (1.0 if normalizar(a["nome"]) == termo else 0.8) - (0 if a["online"] else 0.3)
+            saida.append(resultado(ip, a["nome"], icone, ALTA, nota, "  ·  ".join(p for p in partes if p), acoes))
+        saida.sort(key=lambda r: (-r[4], r[1].lower()))
+        return saida
+
+    def rodar(self, ip, acao):
+        a = self.cache.get(ip, {})
+        host = a.get("dns", "").split(".")[0] or ip
+        term = self.cfg["terminal"]
+        if acao == "ssh":
+            usuario = self.cfg["usuarios"].get(a.get("nome", ""), "")
+            no_terminal(term, ["ssh", f"{usuario}@{host}" if usuario else host])
+        elif acao == "dns":
+            copiar(a.get("dns") or ip)
+        elif acao == "navegador":
+            lancar(["xdg-open", f"http://{a.get('dns') or ip}"])
+        elif acao == "ping":
+            no_terminal(term, ["ping", "-c", "10", ip], segurar=True)
+        else:  # Enter: copia o IP
+            copiar(ip)
+
+
+# ---------------------------------------------------------------- IA local
+
+class IA(Plugin):
+    CAMINHO = "/ia"
+    ID = "krocket-ia"
+    DESCRICAO = "Pergunta pra IA local (Ollama)"
+    ICONE = "dialog-messages"
+    ACOES = [
+        ("webui", "Continuar no Open WebUI", "internet-web-browser"),
+        ("copiar", "Copiar a resposta", "edit-copy"),
+    ]
+
+    def __init__(self, bus, cfg):
+        super().__init__(bus, cfg)
+        self.respostas = {}  # pergunta -> resposta (até o serviço reiniciar)
+        self.pensando = set()
+
+    def buscar(self, termo, com_palavra):
+        modelo = self.cfg["modelo"]
+        if not termo:
+            return [resultado("", f"Pergunte algo pro {modelo}", "dialog-messages", ALTA, 1.0,
+                              "ia <pergunta>  ·  Enter manda, a resposta chega numa notificação")]
+        if termo in self.respostas:
+            resp = self.respostas[termo]
+            return [resultado(termo, resp, "dialog-messages", ALTA, 1.0,
+                              f"Resposta do {modelo}  ·  Enter copia", ["copiar", "webui"], multilinha=True)]
+        if termo in self.pensando:
+            return [resultado("", "Pensando...", "chronometer", ALTA, 1.0,
+                              f"{modelo}: a resposta chega numa notificação")]
+        return [resultado(termo, f"Perguntar: {termo}", "dialog-messages", ALTA, 1.0,
+                          f"{modelo}  ·  Enter manda, a resposta chega numa notificação", ["webui"])]
+
+    def perguntar(self, pergunta):
+        c = self.cfg
+        self.pensando.add(pergunta)
+        id_ = avisar(f"Perguntando pro {c['modelo']}...", pergunta, "chronometer")
+        corpo = json.dumps({
+            "model": c["modelo"], "stream": False, "think": False, "keep_alive": c["manter_carregado"],
+            "messages": [{"role": "system", "content": c["instrucoes"]}, {"role": "user", "content": pergunta}],
+        }).encode()
+        try:
+            req = urllib.request.Request(c["url"].rstrip("/") + "/api/chat", corpo,
+                                         {"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=180) as r:
+                resposta = json.load(r)["message"]["content"].strip()
+        except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as e:
+            self.pensando.discard(pergunta)
+            avisar("IA local não respondeu", f"{e}. O Ollama está rodando? (sv ollama)", "dialog-error", substituir=id_)
+            return
+        self.pensando.discard(pergunta)
+        self.respostas[pergunta] = resposta
+        if c["copiar_resposta"]:
+            copiar(resposta, aviso=False)
+        rodape = "\n\n(copiado)" if c["copiar_resposta"] else ""
+        avisar(pergunta, resposta + rodape, "dialog-messages", substituir=id_)
+
+    def rodar(self, pergunta, acao):
+        if acao == "webui":
+            lancar(["xdg-open", f"{self.cfg['webui'].rstrip('/')}/?q={quote(pergunta)}"])
+        elif pergunta in self.respostas:
+            copiar(self.respostas[pergunta])
+        elif pergunta not in self.pensando:
+            threading.Thread(target=self.perguntar, args=(pergunta,), daemon=True).start()
+
+
+# ---------------------------------------------------------------- ajuda
+
+def atalhos_web():
+    """Atalhos de busca na web instalados pelo krocket (Keys e Name dos .desktop)."""
+    atalhos = []
+    for f in sorted((DADOS / "kf6/searchproviders").glob("*.desktop")):
+        campos = dict(re.findall(r"^(Keys|Name)=(.*)$", f.read_text(errors="ignore"), re.M))
+        if "Keys" in campos:
+            atalhos.append((campos["Keys"].split(","), campos.get("Name", f.stem)))
+    return atalhos
+
+
+EXTRAS_KDE = [  # coisas do próprio KRunner que pouca gente conhece
+    ("=", "=2^10*3", "Calculadora", "accessories-calculator"),
+    ("10 usd em brl", "10 usd em brl", "Converte moedas e unidades (km, kg, °C...)", "accessories-calculator"),
+    ("kill", "kill ", "Mata um processo pelo nome", "process-stop"),
+    ("define", "define ", "Dicionário", "accessories-dictionary"),
+    ("gg:", "gg:", "Pesquisa no Google (yt: YouTube, wp: Wikipedia, gh: GitHub)", "internet-web-browser"),
+    ("?", "?", "Ajuda do KRunner: todos os plugins instalados", "help-about"),
+]
+
+
+class Ajuda(Plugin):
+    CAMINHO = "/ajuda"
+    ID = "krocket-ajuda"
+    DESCRICAO = "Lista os comandos do krocket"
+    ICONE = "help-about"
+
+    def __init__(self, bus, cfg, plugins):
+        super().__init__(bus, cfg)
+        self.plugins = plugins
+
+    def itens(self):
+        for p in self.plugins:
+            palavra = p.cfg["palavra"]
+            yield palavra, palavra + " ", p.DESCRICAO, p.ICONE, "krocket", p.ID
+        for chaves, nome in atalhos_web():
+            yield (" / ".join(f"{k}:" for k in chaves), f"{chaves[-1]}:", f"Pesquisa no {nome}",
+                   "internet-web-browser", "busca na web", None)
+        for nome, texto, desc, icone in EXTRAS_KDE:
+            yield nome, texto, desc, icone, "do KDE", None
+
+    def buscar(self, termo, com_palavra):
+        termo = normalizar(termo)
+        saida = []
+        self.alvos = {}
+        for i, (nome, texto, desc, icone, origem, plugin) in enumerate(self.itens()):
+            self.alvos[texto] = plugin
+            if termo and termo not in normalizar(f"{nome} {desc} {origem}"):
+                continue
+            saida.append(resultado(texto, f"{nome}  —  {desc}", icone, ALTA, 1 - i * 0.01,
+                                   f"{origem}  ·  Enter já abre o KRunner com \"{texto.strip()}\""))
+        return saida
+
+    def rodar(self, texto, acao):
+        abrir_krunner(texto, getattr(self, "alvos", {}).get(texto))
+
+
+def montar(bus, cfg):
+    repos = Repos(bus, cfg["repos"])
+    plugins = [
+        repos,
+        Git(bus, cfg["git"], repos),
+        Docker(bus, cfg["docker"]),
+        Servicos(bus, cfg["servicos"]),
+        Tailscale(bus, cfg["tailscale"]),
+        IA(bus, cfg["ia"]),
+    ]
+    return plugins + [Ajuda(bus, cfg["ajuda"], plugins)]
 
 
 def main():
@@ -410,21 +994,17 @@ def main():
         subprocess.run(["pkill", "-f", "python3? .*krocket$"], check=False)
         subprocess.run(["systemctl", "--user", "restart", "plasma-krunner"], capture_output=True, check=False)
         return
-    if "--testar" in sys.argv:  # krocket --testar "vs poke": mostra o que o KRunner receberia
-        DBusGMainLoop(set_as_default=True)
-        cfg = carregar_config()
-        bus = dbus.SessionBus()
-        q = " ".join(a for a in sys.argv[1:] if a != "--testar")
-        for plugin in (Repos(bus, cfg["repos"]), Docker(bus, cfg["docker"])):
-            for r in plugin.Match(q):
-                print(f"[{type(plugin).__name__}] {r[1]:<30} {r[4]:.2f}  {r[5]['subtext']}")
-        return
     DBusGMainLoop(set_as_default=True)
     bus = dbus.SessionBus()
-    nome = dbus.service.BusName(SERVICO, bus, do_not_queue=True)  # noqa: F841 (segura o nome no bus)
     cfg = carregar_config()
-    Repos(bus, cfg["repos"])
-    Docker(bus, cfg["docker"])
+    if "--testar" in sys.argv:  # krocket --testar "vs poke": mostra o que o KRunner receberia
+        q = " ".join(a for a in sys.argv[1:] if a != "--testar")
+        for plugin in montar(bus, cfg):
+            for r in plugin.Match(q):
+                print(f"[{type(plugin).__name__}] {r[1][:50]:<50} {r[4]:.2f}  {r[5]['subtext']}")
+        return
+    nome = dbus.service.BusName(SERVICO, bus, do_not_queue=True)  # noqa: F841 (segura o nome no bus)
+    montar(bus, cfg)
     GLib.MainLoop().run()
 
 

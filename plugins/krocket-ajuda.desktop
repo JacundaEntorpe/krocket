@@ -1,0 +1,18 @@
+[Desktop Entry]
+Name=Ajuda do krocket
+Comment=Lista os comandos do krocket e os atalhos de busca na web
+Type=Service
+Icon=help-about
+X-KDE-ServiceTypes=Plasma/Runner
+X-KDE-PluginInfo-Author=JacundaEntorpe
+X-KDE-PluginInfo-Name=krocket-ajuda
+X-KDE-PluginInfo-Version=1.1
+X-KDE-PluginInfo-License=MIT
+X-KDE-PluginInfo-EnabledByDefault=true
+X-Plasma-API=DBus
+X-Plasma-DBusRunner-Service=org.jacunda.krocket
+X-Plasma-DBusRunner-Path=/ajuda
+X-Plasma-Request-Actions-Once=true
+X-Plasma-Runner-Min-Letter-Count=2
+X-Plasma-Runner-Syntaxes=kr
+X-Plasma-Runner-Syntax-Descriptions=Lista todos os comandos do krocket

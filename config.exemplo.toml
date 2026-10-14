@@ -1,5 +1,6 @@
 # Copie pra ~/.config/krocket/config.toml (o instalar.sh já faz isso) e ajuste.
-# Depois de mudar: krocket reiniciar  (ou saia e entre da sessão)
+# Só precisa escrever o que quiser mudar: o resto usa o padrão.
+# Depois de mudar: krocket reiniciar
 
 [repos]
 palavra = "vs"          # "vs poke" lista só repositórios
@@ -11,8 +12,37 @@ recentes_vscode = true  # inclui pastas abertas no VS Code mesmo sem git
 editor = "code"         # "codium", "code --new-window", "kate"...
 terminal = "konsole"
 arquivos = "dolphin"
+claude = "claude"       # comando da ação "Abrir o Claude Code aqui"
 reescanear = 120        # segundos entre uma varredura e outra
+
+[git]
+palavra = "gs"          # usa os mesmos repositórios do [repos]
 
 [docker]
 palavra = "dk"
 terminal = "konsole"
+
+[servicos]
+palavra = "sv"
+terminal = "konsole"
+# O que aparece com "sv" sozinho (nome sem o .service)
+favoritos = ["docker", "tailscaled", "ollama", "bluetooth", "firewalld", "app-dev.lizardbyte.app.Sunshine", "ani-presence"]
+
+[tailscale]
+palavra = "ts"
+terminal = "konsole"
+
+[tailscale.usuarios]    # usuário do SSH por aparelho (sem isso usa o seu usuário)
+# pokecroc-vps-admin = "root"
+
+[ia]
+palavra = "ia"
+modelo = "gemma4:26b"
+url = "http://localhost:11434"   # Ollama
+webui = "http://localhost:8080"  # Open WebUI (ação "Continuar no Open WebUI")
+copiar_resposta = true           # a resposta já vai pra área de transferência
+manter_carregado = "5m"          # quanto tempo o modelo fica na memória depois de responder
+instrucoes = "Responda em português do Brasil, curto e direto (no máximo 3 frases). Se a pergunta pedir um comando, responda só com o comando, sem crases."
+
+[ajuda]
+palavra = "kr"

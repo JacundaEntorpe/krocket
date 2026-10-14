@@ -32,4 +32,4 @@ fi
 busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 \
   || dbus-send --session --dest=org.freedesktop.DBus --type=method_call /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig || true
 "$AQUI/krocket" reiniciar
-echo "Pronto. Alt+Espaço e teste: \"vs poke\", \"dk\", \"aur:yay\""
+echo "Pronto. Alt+Espaço e digite \"kr\" pra ver todos os comandos."
