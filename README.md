@@ -61,7 +61,7 @@ Pra ligar a uma tecla:
 
 | Desktop | Como |
 |---|---|
-| KDE | `./instalar.sh --atalho Meta+Space` (vale depois de sair e entrar na sessão), ou Configurações do Sistema → Atalhos → Adicionar aplicativo → krocket |
+| KDE | `krocket atalho Meta+Space` (vale na hora), ou Configurações do Sistema → Atalhos → procure "krocket" |
 | Hyprland | `bind = SUPER, SPACE, exec, krocket menu` no `hyprland.conf` |
 | Sway / i3 | `bindsym $mod+space exec krocket menu` |
 | GNOME | Configurações → Teclado → Atalhos personalizados → comando `krocket menu` |

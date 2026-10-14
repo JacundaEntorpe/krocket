@@ -218,6 +218,7 @@ class Plugin(dbus.service.Object):
     SEM_PALAVRA = False  # True se o plugin também responde sem a palavra-chave
     DESCRICAO = ""
     ICONE = "system-run"
+    ACAO_PADRAO = "Abrir"  # o que o Enter faz (aparece no topo do Shift+Enter); None = já está na lista
 
     LIMITE = 15  # quantos resultados no KRunner (o menu do rofi mostra todos)
 
@@ -371,6 +372,7 @@ def git_em_segundo_plano(caminho, verbo, depois=None):
 
 
 class Repos(Plugin):
+    ACAO_PADRAO = "Abrir no VS Code"
     CAMINHO = "/repos"
     ID = "krocket-repos"
     SEM_PALAVRA = True
@@ -524,6 +526,7 @@ def ler_status(caminho):
 
 
 class Git(Plugin):
+    ACAO_PADRAO = "Abrir no VS Code"
     CAMINHO = "/git"
     ID = "krocket-git"
     DESCRICAO = "Repositórios com alterações, commits sem push ou atrasados"
@@ -631,6 +634,7 @@ class Git(Plugin):
 # ---------------------------------------------------------------- docker
 
 class Docker(Plugin):
+    ACAO_PADRAO = None  # Enter = logs (ou iniciar), que já estão na lista
     CAMINHO = "/docker"
     ID = "krocket-docker"
     DESCRICAO = "Containers Docker: logs, shell, start/stop/restart"
@@ -711,6 +715,7 @@ class Docker(Plugin):
 # ---------------------------------------------------------------- systemd
 
 class Servicos(Plugin):
+    ACAO_PADRAO = "Ver o status"
     CAMINHO = "/servicos"
     ID = "krocket-servicos"
     DESCRICAO = "Serviços do systemd: status, logs, start/stop/restart"
@@ -824,6 +829,7 @@ class Servicos(Plugin):
 # ---------------------------------------------------------------- tailscale
 
 class Tailscale(Plugin):
+    ACAO_PADRAO = "Copiar o IP"
     CAMINHO = "/tailscale"
     ID = "krocket-tailscale"
     DESCRICAO = "Aparelhos da rede Tailscale: copiar IP, SSH, ping"
@@ -895,6 +901,7 @@ class Tailscale(Plugin):
 # ---------------------------------------------------------------- IA local
 
 class IA(Plugin):
+    ACAO_PADRAO = "Perguntar"
     CAMINHO = "/ia"
     ID = "krocket-ia"
     DESCRICAO = "Pergunta pra IA local (Ollama)"
@@ -1001,6 +1008,7 @@ class IA(Plugin):
 # ---------------------------------------------------------------- hermes
 
 class Hermes(Plugin):
+    ACAO_PADRAO = "Abrir no terminal"
     CAMINHO = "/hermes"
     ID = "krocket-hermes"
     DESCRICAO = "Manda uma tarefa pro Hermes (agente que mexe no PC)"
@@ -1158,7 +1166,7 @@ def tema_rofi(cfg):
     return str(tema if tema.exists() else AQUI / "menu" / "tema.rasi")
 
 
-def rofi(cfg, entradas, prompt="krocket", mesg="", filtro=""):
+def rofi(cfg, entradas, prompt="krocket", mesg="", filtro="", linhas_max=None, dica=None, msg_em_cima=False):
     """Abre o rofi em modo dmenu. Devolve (mais_acoes, índice, texto digitado) ou None se fechou."""
     linhas = []
     for e in entradas:
@@ -1177,6 +1185,13 @@ def rofi(cfg, entradas, prompt="krocket", mesg="", filtro=""):
         cmd += ["-mesg", mesg]
     if filtro:
         cmd += ["-filter", filtro]
+    if linhas_max:  # janela do tamanho da lista, sem espaço vazio
+        cmd += ["-l", str(min(linhas_max, 10))]
+    if dica is not None:
+        cmd += ["-theme-str", f'entry {{ placeholder: "{dica}"; }}']
+    if msg_em_cima:  # a mensagem é o conteúdo (resposta da IA), não o rodapé
+        cmd += ["-theme-str", "mainbox { children: [ inputbar, message, listview ]; } "
+                              "textbox { text-color: @texto; font: inherit; }"]
     r = subprocess.run(cmd, input="\n".join(linhas), capture_output=True, text=True)
     if r.returncode not in (0, 10):
         return None
@@ -1226,13 +1241,14 @@ class Menu:
     def escolher_acao(self, e):
         p = e["plugin"]
         acoes = [a for a in p.ACOES if e["acoes"] is None or a[0] in e["acoes"]]
-        opcoes = [{"texto": f"<b>Abrir</b>    <span alpha='55%' size='small'>ação padrão</span>",
-                   "icone": e["icone"]}]
-        opcoes += [{"texto": esc(nome), "icone": icone} for _, nome, icone in acoes]
-        r = rofi(self.mc, opcoes, prompt=e["nome"][:40])
-        if not r or r[1] < 0:
+        if p.ACAO_PADRAO:
+            acoes = [("", p.ACAO_PADRAO, e["icone"])] + acoes
+        opcoes = [{"texto": esc(nome) + ("    <span alpha='55%' size='small'>Enter</span>" if not id_ else ""),
+                   "icone": icone} for id_, nome, icone in acoes]
+        r = rofi(self.mc, opcoes, prompt=e["nome"][:40], linhas_max=len(opcoes), dica="o que fazer?")
+        if not r or not 0 <= r[1] < len(acoes):
             return None
-        return "" if r[1] == 0 else acoes[r[1] - 1][0]
+        return acoes[r[1]][0]
 
     def perguntar_ia(self, pergunta):
         ia = self.por_tipo["IA"]
@@ -1246,7 +1262,8 @@ class Menu:
                   {"texto": "Continuar no Open WebUI", "icone": "internet-web-browser"},
                   {"texto": "Perguntar outra coisa", "icone": "dialog-messages"}]
         copiado = "  <span alpha='55%' size='small'>(já copiada)</span>" if ia.cfg["copiar_resposta"] else ""
-        r = rofi(self.mc, opcoes, prompt="ia", mesg=f"<b>{esc(pergunta)}</b>\n\n{GLib.markup_escape_text(resposta)}{copiado}")
+        r = rofi(self.mc, opcoes, prompt="ia", mesg=f"<b>{esc(pergunta)}</b>\n\n{GLib.markup_escape_text(resposta)}{copiado}",
+                 linhas_max=len(opcoes), dica="", msg_em_cima=True)
         if not r or r[1] < 0:
             return None
         if r[1] == 0:
@@ -1330,12 +1347,42 @@ def url_atalho(chave, termo):
     return None
 
 
+def ligar_atalho(tecla):
+    """Liga o menu a uma tecla no KDE, valendo na hora (sem sair da sessão)."""
+    mods = {"meta": 0x10000000, "super": 0x10000000, "ctrl": 0x04000000, "control": 0x04000000,
+            "alt": 0x08000000, "shift": 0x02000000}
+    especiais = {"space": 0x20, "espaco": 0x20, "return": 0x01000004, "enter": 0x01000004,
+                 "tab": 0x01000001, "escape": 0x01000000, "print": 0x01000009}
+    codigo = 0
+    for parte in tecla.split("+"):
+        nome = normalizar(parte.strip())
+        if nome in mods:
+            codigo |= mods[nome]
+        elif nome in especiais:
+            codigo |= especiais[nome]
+        elif re.fullmatch(r"f([1-9]|1[0-2])", nome):
+            codigo |= 0x01000030 + int(nome[1:]) - 1
+        elif len(nome) == 1:
+            codigo |= ord(nome.upper())
+        else:
+            sys.exit(f"Não entendi a tecla \"{parte}\". Exemplos: Meta+Space, Ctrl+Alt+K, Meta+F1")
+    ka = dbus.SessionBus().get_object("org.kde.kglobalaccel", "/kglobalaccel")
+    acao = dbus.Array(["krocket.desktop", "_launch", "krocket", "krocket"], signature="s")
+    ka.doRegister(acao, dbus_interface="org.kde.KGlobalAccel")
+    teclas = dbus.Array([dbus.Struct([dbus.Array([codigo, 0, 0, 0], signature="i")])], signature="(ai)")
+    ka.setForeignShortcutKeys(acao, teclas, dbus_interface="org.kde.KGlobalAccel")
+    print(f"krocket menu ligado a {tecla}.")
+
+
 def main():
     if sys.argv[1:2] == ["reiniciar"]:
         # Mata o serviço (o D-Bus sobe de novo na próxima busca) e reinicia o KRunner pra ele
         # reler os plugins. Só fechar o KRunner não serve: o Alt+Espaço não consegue abrir ele de volta.
         subprocess.run(["pkill", "-f", "python3? .*krocket$"], check=False)
         subprocess.run(["systemctl", "--user", "restart", "plasma-krunner"], capture_output=True, check=False)
+        return
+    if sys.argv[1:2] == ["atalho"] and len(sys.argv) == 3:  # krocket atalho Meta+Space (só no KDE)
+        ligar_atalho(sys.argv[2])
         return
     if sys.argv[1:2] == ["menu"]:
         if not shutil.which("rofi"):

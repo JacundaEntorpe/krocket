@@ -60,10 +60,8 @@ busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DB
 if [[ $KDE == 1 ]]; then
   mkdir -p "$DADOS/krunner/dbusplugins"
   cp "$AQUI"/plugins/*.desktop "$DADOS/krunner/dbusplugins/"
-  if [[ -n "$TECLA" ]]; then
-    kwriteconfig6 --file kglobalshortcutsrc --group services --group krocket.desktop --key _launch "$TECLA"
-    echo "Menu do rofi ligado a $TECLA (vale depois de sair e entrar na sessão)."
-  fi
+  kbuildsycoca6 >/dev/null 2>&1 || true  # o KDE passa a conhecer o krocket.desktop
+  [[ -n "$TECLA" ]] && "$AQUI/krocket" atalho "$TECLA"
   "$AQUI/krocket" reiniciar
   echo "Pronto. Alt+Espaço e digite \"kr\" pra ver todos os comandos."
 else

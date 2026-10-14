@@ -6,12 +6,12 @@
  */
 
 * {
-    fundo:        #19191eee;   /* fundo da janela (os 2 últimos dígitos são a transparência) */
+    fundo:        #19191eff;   /* fundo da janela (os 2 últimos dígitos são a opacidade: ff = sólido) */
     fundo-caixa:  #232328;     /* fundo da barra de busca e do rodapé */
     texto:        #dcdce1;
     apagado:      #8c8c91;     /* rodapé, dica da busca */
     destaque:     #e92f17;     /* borda, prompt, letras que bateram com a busca */
-    selecionado:  #aa281966;   /* fundo da linha selecionada */
+    selecionado:  #2e2e35;     /* fundo da linha selecionada */
 
     font:             "Noto Sans 11";
     background-color: transparent;
@@ -55,14 +55,14 @@ entry {
 }
 
 listview {
-    lines:        9;
+    lines:        10;          /* quantas linhas aparecem de uma vez */
     fixed-height: true;
     spacing:      2px;
     scrollbar:    false;
 }
 
 element {
-    padding:       8px 12px;
+    padding:       6px 12px;
     spacing:       12px;
     border-radius: 8px;
 }
@@ -73,10 +73,12 @@ element normal.normal, element alternate.normal {
 
 element selected.normal {
     background-color: @selecionado;
+    border:           0 0 0 3px;   /* faixa vermelha à esquerda da linha selecionada */
+    border-color:     @destaque;
 }
 
 element-icon {
-    size: 1.6em;
+    size: 1.4em;
 }
 
 element-text {
@@ -97,9 +99,11 @@ textbox {
 
 /* janela "Perguntando pro gemma..." e mensagens de erro */
 error-message {
-    padding:          20px;
-    background-color: @fundo;
-    border:           2px;
-    border-color:     @destaque;
-    border-radius:    14px;
+    padding:          6px;
+    background-color: transparent;
+}
+
+error-message textbox {
+    text-color: @texto;
+    font:       "Noto Sans 11";
 }
