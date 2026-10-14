@@ -35,7 +35,6 @@ from urllib.parse import quote, unquote, urlparse
 import dbus
 import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
-from gi.repository import GLib
 
 SERVICO = "org.jacunda.krocket"
 IFACE = "org.kde.krunner1"
@@ -188,6 +187,7 @@ def abrir_krunner(texto, plugin=None):
         except dbus.DBusException:
             pass
         return False
+    from gi.repository import GLib  # só o serviço do KRunner usa (o menu abre mais rápido sem)
     GLib.timeout_add(250, abrir)  # espera o KRunner fechar depois do Enter
 
 
@@ -752,6 +752,31 @@ class Servicos(Plugin):
             pass
         return unidades
 
+    def essenciais(self):
+        """Só os favoritos e os que falharam: é o que aparece com "sv" sozinho. Bem mais
+        rápido que listar todos os serviços (~10 ms em vez de ~300 ms)."""
+        nomes = [f if "." in f else f + ".service" for f in self.cfg["favoritos"]]
+        unidades = {}
+        for usuario in (False, True):
+            base = ["systemctl"] + (["--user"] if usuario else [])
+            escopo = "user:" if usuario else "system:"
+            try:
+                r = subprocess.run(base + ["show", "-p", "Id,LoadState,ActiveState,SubState,UnitFileState,Description"]
+                                   + nomes, capture_output=True, text=True, timeout=3)
+                for bloco in r.stdout.strip().split("\n\n"):
+                    p = dict(l.split("=", 1) for l in bloco.splitlines() if "=" in l)
+                    if p.get("LoadState") == "loaded":
+                        unidades[escopo + p["Id"]] = {"habilitado": p.get("UnitFileState", ""), "ativo": p.get("ActiveState", ""),
+                                                      "sub": p.get("SubState", ""), "desc": p.get("Description", ""), "usuario": usuario}
+                r = subprocess.run(base + ["list-units", "--state=failed", "-o", "json"],
+                                   capture_output=True, text=True, timeout=3)
+                for u in json.loads(r.stdout or "[]"):
+                    unidades[escopo + u["unit"]] = {"habilitado": "", "ativo": u["active"], "sub": u["sub"],
+                                                    "desc": u["description"], "usuario": usuario}
+            except (OSError, subprocess.TimeoutExpired, ValueError, KeyError):
+                pass
+        return unidades
+
     def unidades(self):
         if time.time() - self.quando > 5:
             todas = {}
@@ -766,7 +791,8 @@ class Servicos(Plugin):
         termo = normalizar(termo)
         favoritos = [normalizar(f) for f in self.cfg["favoritos"]]
         achados = []
-        for id_, d in self.unidades().items():
+        fonte = self.unidades() if termo else (self.cache if time.time() - self.quando <= 5 else self.essenciais())
+        for id_, d in fonte.items():
             unidade = id_.split(":", 1)[1]
             base = normalizar(unidade.rsplit(".", 1)[0])
             fav = base in favoritos
@@ -1144,7 +1170,13 @@ RODAPE = "Enter abre  ·  Shift+Enter mais ações  ·  Ctrl+Enter usa o que voc
 
 
 def esc(texto):
-    return GLib.markup_escape_text(" ⏎ ".join(str(texto).split("\n")))
+    return escapar(" ⏎ ".join(str(texto).split("\n")))
+
+
+def escapar(texto):
+    """Escapa texto pro markup do rofi (Pango)."""
+    return (str(texto).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace("'", "&#39;").replace('"', "&quot;"))
 
 
 def tema_icones(cfg):
@@ -1166,17 +1198,13 @@ def tema_rofi(cfg):
     return str(tema if tema.exists() else AQUI / "menu" / "tema.rasi")
 
 
-def rofi(cfg, entradas, prompt="krocket", mesg="", filtro="", linhas_max=None, dica=None, msg_em_cima=False):
-    """Abre o rofi em modo dmenu. Devolve (mais_acoes, índice, texto digitado) ou None se fechou."""
-    linhas = []
-    for e in entradas:
-        opcoes = []
-        if e.get("icone"):
-            opcoes += ["icon", e["icone"]]
-        if e.get("meta"):
-            opcoes += ["meta", e["meta"]]
-        linhas.append(e["texto"] + ("\0" + "\x1f".join(opcoes) if opcoes else ""))
+def rofi(cfg, entradas, prompt="krocket", mesg="", filtro="", linhas_max=None, dica=None, msg_em_cima=False,
+         vistas=None):
+    """Abre o rofi em modo dmenu. Devolve (mais_acoes, índice, texto digitado) ou None se fechou.
+    entradas pode ser um gerador: o rofi abre na hora e as linhas entram conforme ficam prontas.
+    Cada entrada escrita vai pra lista vistas (é ela que o índice devolvido referencia)."""
     cmd = ["rofi", "-dmenu", "-i", "-markup-rows", "-show-icons", "-format", "i f", "-p", prompt,
+           "-async-pre-read", "0",
            "-theme", tema_rofi(cfg), "-kb-accept-alt", "", "-kb-custom-1", "Shift+Return",
            # Clique fora da caixa fecha; clique num item abre direto (o clique no item tem prioridade)
            "-kb-cancel", "Escape,Control+g,Control+bracketleft,MousePrimary,MouseSecondary",
@@ -1195,11 +1223,33 @@ def rofi(cfg, entradas, prompt="krocket", mesg="", filtro="", linhas_max=None, d
     if msg_em_cima:  # a mensagem é o conteúdo (resposta da IA), não o rodapé
         cmd += ["-theme-str", "mainbox { children: [ inputbar, message, listview ]; } "
                               "textbox { text-color: @texto; font: inherit; }"]
-    r = subprocess.run(cmd, input="\n".join(linhas), capture_output=True, text=True)
-    if r.returncode not in (0, 10):
+    vistas = [] if vistas is None else vistas
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        for e in entradas:
+            opcoes = []
+            if e.get("icone"):
+                opcoes += ["icon", e["icone"]]
+            if e.get("meta"):
+                opcoes += ["meta", e["meta"]]
+            proc.stdin.write(e["texto"] + ("\0" + "\x1f".join(opcoes) if opcoes else "") + "\n")
+            proc.stdin.flush()
+            vistas.append(e)
+        proc.stdin.close()
+    except (BrokenPipeError, OSError):  # escolheu antes de tudo carregar
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+    finally:
+        if hasattr(entradas, "close"):
+            entradas.close()
+    saida = proc.stdout.read()
+    proc.wait()
+    if proc.returncode not in (0, 10):
         return None
-    indice, _, digitado = r.stdout.rstrip("\n").partition(" ")
-    return r.returncode == 10, int(indice) if re.fullmatch(r"-?\d+", indice) else -1, digitado
+    indice, _, digitado = saida.rstrip("\n").partition(" ")
+    return proc.returncode == 10, int(indice) if re.fullmatch(r"-?\d+", indice) else -1, digitado
 
 
 class Menu:
@@ -1216,30 +1266,34 @@ class Menu:
             t += f"    <span alpha='55%' size='small'>{esc(sub)}</span>"
         return t
 
+    def entradas_de(self, p, resultados):
+        palavra = p.cfg["palavra"]
+        for id_, texto, icone, _rel, _nota, props in resultados:
+            sub = str(props.get("subtext", ""))
+            yield {
+                "texto": self.linha(palavra, texto, sub), "icone": icone, "plugin": p, "id": str(id_),
+                "nome": str(texto), "acoes": [str(a) for a in props["actions"]] if "actions" in props else None,
+                "meta": f"{palavra} {normalizar(str(texto))} {normalizar(sub)}",
+            }
+
     def coletar(self):
-        """Tudo o que aparece no menu: resultado de cada plugin com a palavra-chave dele."""
+        """Tudo o que aparece no menu, na ordem: cada plugin roda em paralelo e as linhas
+        saem assim que o plugin da vez termina (os repositórios ficam prontos na hora)."""
         ordem = ["Repos", "Git", "Docker", "Servicos", "Tailscale", "IA", "Hermes"]
-        with ThreadPoolExecutor(len(ordem)) as ex:
-            resultados = dict(zip(ordem, ex.map(lambda t: self.por_tipo[t].Match(self.por_tipo[t].cfg["palavra"]), ordem)))
-        entradas = []
-        for tipo in ordem:
-            p = self.por_tipo[tipo]
-            palavra = p.cfg["palavra"]
-            for id_, texto, icone, _rel, _nota, props in resultados[tipo]:
-                sub = str(props.get("subtext", ""))
-                entradas.append({
-                    "texto": self.linha(palavra, texto, sub), "icone": icone, "plugin": p, "id": str(id_),
-                    "nome": str(texto), "acoes": [str(a) for a in props["actions"]] if "actions" in props else None,
-                    "meta": f"{palavra} {normalizar(str(texto))} {normalizar(sub)}",
-                })
-        ajuda = self.por_tipo["Ajuda"]
-        for nome, texto, desc, icone, origem, _ in ajuda.itens():
-            if origem == "do KDE" and not texto.endswith(":"):
-                continue  # calculadora, kill... são do KRunner, não existem no rofi
-            entradas.append({"texto": self.linha(ajuda.cfg["palavra"], nome, desc), "icone": icone,
-                             "plugin": ajuda, "id": texto, "nome": nome,
-                             "meta": f"{ajuda.cfg['palavra']} ajuda {normalizar(nome)} {normalizar(desc)}"})
-        return entradas
+        ex = ThreadPoolExecutor(len(ordem))
+        try:
+            futuros = [(self.por_tipo[t], ex.submit(self.por_tipo[t].Match, self.por_tipo[t].cfg["palavra"])) for t in ordem]
+            for p, futuro in futuros:
+                yield from self.entradas_de(p, futuro.result())
+            ajuda = self.por_tipo["Ajuda"]
+            for nome, texto, desc, icone, origem, _ in ajuda.itens():
+                if origem == "do KDE" and not texto.endswith(":"):
+                    continue  # calculadora, kill... são do KRunner, não existem no rofi
+                yield {"texto": self.linha(ajuda.cfg["palavra"], nome, desc), "icone": icone,
+                       "plugin": ajuda, "id": texto, "nome": nome,
+                       "meta": f"{ajuda.cfg['palavra']} ajuda {normalizar(nome)} {normalizar(desc)}"}
+        finally:
+            ex.shutdown(wait=False, cancel_futures=True)
 
     def escolher_acao(self, e):
         p = e["plugin"]
@@ -1265,7 +1319,7 @@ class Menu:
                   {"texto": "Continuar no Open WebUI", "icone": "internet-web-browser"},
                   {"texto": "Perguntar outra coisa", "icone": "dialog-messages"}]
         copiado = "  <span alpha='55%' size='small'>(já copiada)</span>" if ia.cfg["copiar_resposta"] else ""
-        r = rofi(self.mc, opcoes, prompt="ia", mesg=f"<b>{esc(pergunta)}</b>\n\n{GLib.markup_escape_text(resposta)}{copiado}",
+        r = rofi(self.mc, opcoes, prompt="ia", mesg=f"<b>{esc(pergunta)}</b>\n\n{escapar(resposta)}{copiado}",
                  linhas_max=len(opcoes), dica="", msg_em_cima=True)
         if not r or r[1] < 0:
             return None
@@ -1311,10 +1365,17 @@ class Menu:
         if m and (url := url_atalho(m.group(1), m.group(2).strip())):
             lancar(["xdg-open", url])
             return None
-        for p in self.plugins:  # "dk xyz" sem resultado: avisa em vez de pesquisar no Google
+        for p in self.plugins:  # "sv xyz": o menu só tem os favoritos; busca em tudo do plugin
             if p.separar(texto)[0]:
-                avisar("Nada encontrado", texto, "edit-find")
-                return texto
+                achados, resultados = [], p.Match(texto)
+                r = rofi(self.mc, self.entradas_de(p, resultados), prompt=texto, vistas=achados,
+                         mesg=RODAPE) if resultados else None
+                if r is None:
+                    if not achados:
+                        avisar("Nada encontrado", texto, "edit-find")
+                    return None if achados else texto
+                mais_acoes, indice, digitado = r
+                return self.executar(achados[indice], mais_acoes, digitado) if 0 <= indice < len(achados) else None
         lancar(["xdg-open", self.mc["busca"].format(quote(texto))])
         return None
 
@@ -1331,8 +1392,8 @@ class Menu:
 
     def laco(self, filtro):
         while True:
-            entradas = self.coletar()
-            r = rofi(self.mc, entradas, mesg=RODAPE, filtro=filtro)
+            entradas = []
+            r = rofi(self.mc, self.coletar(), mesg=RODAPE, filtro=filtro, vistas=entradas)
             if r is None:
                 break
             mais_acoes, indice, digitado = r
@@ -1500,6 +1561,7 @@ def main():
     nome = dbus.service.BusName(SERVICO, bus, do_not_queue=True)  # noqa: F841 (segura o nome no bus)
     montar(bus, cfg)
     FocoMenu(bus)
+    from gi.repository import GLib
     GLib.MainLoop().run()
 
 

@@ -94,7 +94,7 @@ krocket --testar "vs poke"
 
 ## Como funciona
 
-O KRunner conversa com plugins externos pela interface D-Bus `org.kde.krunner1`. O `krocket` é um script Python que expõe um objeto por plugin nesse serviço (`/repos`, `/git`, `/docker`, `/servicos`, `/tailscale`, `/ia`, `/hermes`, `/ajuda`). O `krocket menu` usa as mesmas classes direto, sem D-Bus, e mostra tudo no rofi. O `.service` em `~/.local/share/dbus-1/services/` faz o D-Bus subir o script sozinho na primeira busca, então não há nada pra deixar rodando no boot.
+O KRunner conversa com plugins externos pela interface D-Bus `org.kde.krunner1`. O `krocket` é um script Python que expõe um objeto por plugin nesse serviço (`/repos`, `/git`, `/docker`, `/servicos`, `/tailscale`, `/ia`, `/hermes`, `/ajuda`). O `krocket menu` usa as mesmas classes direto, sem D-Bus, e mostra tudo no rofi. Ele abre o rofi antes de tudo estar pronto (~90 ms) e manda as linhas conforme cada plugin termina, então a janela aparece na hora e Docker e serviços chegam logo depois. O `.service` em `~/.local/share/dbus-1/services/` faz o D-Bus subir o script sozinho na primeira busca, então não há nada pra deixar rodando no boot.
 
 | Arquivo | Vai pra |
 |---|---|
