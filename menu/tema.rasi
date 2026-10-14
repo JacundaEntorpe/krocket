@@ -12,27 +12,31 @@
     apagado:      #8c8c91;     /* rodapé, dica da busca */
     destaque:     #e92f17;     /* borda, prompt, letras que bateram com a busca */
     selecionado:  #2e2e35;     /* fundo da linha selecionada */
+    escurecer:    #0000004d;   /* a tela atrás do menu; 00000000 = sem escurecer */
 
     font:             "Noto Sans 11";
     background-color: transparent;
     text-color:       @texto;
 }
 
+/* A janela ocupa a tela toda (transparente) e a caixa fica dentro dela: assim um
+   clique fora da caixa cai no rofi e fecha o menu, em qualquer desktop. */
 window {
-    width:            44em;
-    location:         north;
-    anchor:           north;
-    y-offset:         18%;
+    fullscreen:       true;
+    background-color: @escurecer;
+    /* 18% = distância do topo; 22em = metade da largura da caixa (44em de largura) */
+    padding:          18% calc( 50% - 22em ) 0;
+}
+
+mainbox {
+    expand:           false;
+    spacing:          10px;
+    children:         [ inputbar, listview, message ];
     background-color: @fundo;
     border:           2px;
     border-color:     @destaque;
     border-radius:    14px;
     padding:          14px;
-}
-
-mainbox {
-    spacing:  10px;
-    children: [ inputbar, listview, message ];
 }
 
 inputbar {
@@ -99,8 +103,12 @@ textbox {
 
 /* janela "Perguntando pro gemma..." e mensagens de erro */
 error-message {
-    padding:          6px;
-    background-color: transparent;
+    expand:           false;
+    padding:          20px;
+    background-color: @fundo;
+    border:           2px;
+    border-color:     @destaque;
+    border-radius:    14px;
 }
 
 error-message textbox {

@@ -1177,7 +1177,10 @@ def rofi(cfg, entradas, prompt="krocket", mesg="", filtro="", linhas_max=None, d
             opcoes += ["meta", e["meta"]]
         linhas.append(e["texto"] + ("\0" + "\x1f".join(opcoes) if opcoes else ""))
     cmd = ["rofi", "-dmenu", "-i", "-markup-rows", "-show-icons", "-format", "i f", "-p", prompt,
-           "-theme", tema_rofi(cfg), "-kb-accept-alt", "", "-kb-custom-1", "Shift+Return"]
+           "-theme", tema_rofi(cfg), "-kb-accept-alt", "", "-kb-custom-1", "Shift+Return",
+           # Clique fora da caixa fecha; clique num item abre direto (o clique no item tem prioridade)
+           "-kb-cancel", "Escape,Control+g,Control+bracketleft,MousePrimary,MouseSecondary",
+           "-me-select-entry", "", "-me-accept-entry", "MousePrimary"]
     icones = tema_icones(cfg)
     if icones:
         cmd += ["-icon-theme", icones]
@@ -1252,7 +1255,7 @@ class Menu:
 
     def perguntar_ia(self, pergunta):
         ia = self.por_tipo["IA"]
-        espera = subprocess.Popen(["rofi", "-theme", tema_rofi(self.mc), "-e",
+        espera = subprocess.Popen(["rofi", "-theme", tema_rofi(self.mc), "-kb-cancel", "Escape,MousePrimary", "-e",
                                    f"Perguntando pro {ia.cfg['modelo']}...\n\n{pergunta}"])
         resposta = ia.perguntar(pergunta, notificar=False)
         espera.terminate()
