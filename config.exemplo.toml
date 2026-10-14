@@ -1,0 +1,18 @@
+# Copie pra ~/.config/krocket/config.toml (o instalar.sh já faz isso) e ajuste.
+# Depois de mudar: krocket reiniciar  (ou saia e entre da sessão)
+
+[repos]
+palavra = "vs"          # "vs poke" lista só repositórios
+minimo = 3              # sem a palavra, aparece a partir de 3 letras (só nomes que batem bem)
+pastas = ["~/Projetos", "~/Documentos", "~/Servidor_Poketibia", "~/dotfiles"]
+profundidade = 4        # quantas pastas pra dentro ele procura .git
+ignorar = ["node_modules", "vendor", "build", "dist", "target", "venv", "__pycache__"]
+recentes_vscode = true  # inclui pastas abertas no VS Code mesmo sem git
+editor = "code"         # "codium", "code --new-window", "kate"...
+terminal = "konsole"
+arquivos = "dolphin"
+reescanear = 120        # segundos entre uma varredura e outra
+
+[docker]
+palavra = "dk"
+terminal = "konsole"

@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+"""krocket: plugins do KRunner (Plasma 6) pra quem programa.
+
+  vs <nome>   acha repositórios git e pastas recentes do VS Code e abre no editor
+  dk <nome>   lista containers Docker: logs, shell, start/stop/restart
+
+Roda como um serviço D-Bus (org.kde.krunner1). O KRunner sobe ele sozinho pela
+ativação do D-Bus; não precisa deixar rodando. Config: ~/.config/krocket/config.toml
+"""
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import tomllib
+import unicodedata
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+import dbus
+import dbus.service
+from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib
+
+SERVICO = "org.jacunda.krocket"
+IFACE = "org.kde.krunner1"
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "krocket" / "config.toml"
+VSCODE_STORAGE = Path.home() / ".config/Code/User/workspaceStorage"
+
+# Relevância que o KRunner entende (KRunner::QueryMatch::CategoryRelevance)
+ALTA, MEDIA = 100, 50
+
+PADRAO = {
+    "repos": {
+        "palavra": "vs",
+        "minimo": 3,  # letras pra aparecer sem a palavra-chave
+        "pastas": ["~/Projetos", "~/Documentos", "~/Servidor_Poketibia", "~/dotfiles"],
+        "profundidade": 4,
+        "ignorar": ["node_modules", "vendor", "build", "dist", "target", "venv", "__pycache__"],
+        "recentes_vscode": True,
+        "editor": "code",
+        "terminal": "konsole",
+        "arquivos": "dolphin",
+        "reescanear": 120,  # segundos
+    },
+    "docker": {
+        "palavra": "dk",
+        "terminal": "konsole",
+    },
+}
+
+
+def carregar_config():
+    cfg = json.loads(json.dumps(PADRAO))
+    try:
+        with open(CONFIG, "rb") as f:
+            usuario = tomllib.load(f)
+    except FileNotFoundError:
+        return cfg
+    except tomllib.TOMLDecodeError as e:
+        print(f"krocket: config inválida ({e}), usando o padrão", file=sys.stderr)
+        return cfg
+    for secao, valores in usuario.items():
+        if isinstance(valores, dict) and secao in cfg:
+            cfg[secao].update(valores)
+    return cfg
+
+
+def normalizar(s):
+    s = unicodedata.normalize("NFKD", s.lower())
+    return "".join(c for c in s if not unicodedata.combining(c))
+
+
+def til(p):
+    casa = str(Path.home())
+    return "~" + p[len(casa):] if p.startswith(casa) else p
+
+
+def lancar(cmd, cwd=None):
+    subprocess.Popen(cmd, cwd=cwd, start_new_session=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def avisar(titulo, texto="", icone="dialog-information"):
+    if shutil.which("notify-send"):
+        lancar(["notify-send", "-a", "KRunner", "-i", icone, titulo, texto])
+
+
+def copiar(texto):
+    try:
+        klipper = dbus.SessionBus().get_object("org.kde.klipper", "/klipper")
+        klipper.setClipboardContents(texto, dbus_interface="org.kde.klipper.klipper")
+        avisar("Copiado", texto, "edit-copy")
+    except dbus.DBusException:
+        if shutil.which("wl-copy"):
+            subprocess.run(["wl-copy", texto])
+
+
+def resultado(id_, texto, icone, relevancia, nota, subtexto="", acoes=None, urls=None):
+    props = {"subtext": subtexto}
+    if acoes is not None:
+        props["actions"] = dbus.Array(acoes, signature="s")
+    if urls:
+        props["urls"] = dbus.Array(urls, signature="s")
+    return (id_, texto, icone, relevancia, float(nota), dbus.Dictionary(props, signature="sv"))
+
+
+# ---------------------------------------------------------------- repositórios
+
+def ler_git(pasta):
+    """Branch e URL web do remote, lidos direto da pasta .git (sem chamar o git)."""
+    git = pasta / ".git"
+    if git.is_file():  # worktree ou submódulo: "gitdir: <caminho>"
+        m = re.match(r"gitdir:\s*(.+)", git.read_text(errors="ignore").strip())
+        if not m:
+            return None, None
+        git = (pasta / m.group(1)).resolve()
+    branch = None
+    try:
+        head = (git / "HEAD").read_text().strip()
+        branch = head.removeprefix("ref: refs/heads/") if head.startswith("ref:") else head[:8]
+    except OSError:
+        pass
+    web = None
+    try:
+        conf = (git / "config").read_text(errors="ignore")
+        m = re.search(r'\[remote "origin"\][^\[]*?url\s*=\s*(\S+)', conf) or re.search(r"url\s*=\s*(\S+)", conf)
+        if m:
+            web = url_web(m.group(1))
+    except OSError:
+        pass
+    return branch, web
+
+
+def url_web(remote):
+    remote = remote.removesuffix(".git")
+    m = re.match(r"(?:ssh://)?git@([^:/]+)[:/](.+)", remote)
+    if m:
+        return f"https://{m.group(1)}/{m.group(2)}"
+    if remote.startswith(("http://", "https://")):
+        return re.sub(r"//[^@/]+@", "//", remote)  # tira usuário/token da URL
+    return None
+
+
+def achar_repos(pastas, profundidade, ignorar):
+    achados = []
+
+    def andar(d, nivel):
+        if (d / ".git").exists():
+            achados.append(d)
+            return
+        if nivel >= profundidade:
+            return
+        try:
+            filhos = [e for e in os.scandir(d) if e.is_dir(follow_symlinks=False)]
+        except OSError:
+            return
+        for e in filhos:
+            if e.name.startswith(".") or e.name in ignorar:
+                continue
+            andar(Path(e.path), nivel + 1)
+
+    for p in pastas:
+        p = Path(p).expanduser()
+        if p.is_dir():
+            andar(p, 0)
+    return achados
+
+
+def recentes_vscode():
+    """{pasta: quando foi aberta} a partir do workspaceStorage do VS Code."""
+    recentes = {}
+    try:
+        entradas = list(os.scandir(VSCODE_STORAGE))
+    except OSError:
+        return recentes
+    for e in entradas:
+        try:
+            ws = json.loads(Path(e.path, "workspace.json").read_text())
+            uri = ws.get("folder")
+            if not uri or not uri.startswith("file://"):
+                continue
+            pasta = unquote(urlparse(uri).path)
+            if os.path.isdir(pasta):
+                recentes[pasta] = max(recentes.get(pasta, 0), e.stat().st_mtime)
+        except (OSError, ValueError):
+            continue
+    return recentes
+
+
+class Repos(dbus.service.Object):
+    ACOES = [
+        ("terminal", "Abrir no terminal", "utilities-terminal"),
+        ("pasta", "Abrir no gerenciador de arquivos", "system-file-manager"),
+        ("web", "Abrir o remote no navegador", "internet-web-browser"),
+        ("copiar", "Copiar o caminho", "edit-copy"),
+    ]
+
+    def __init__(self, bus, cfg):
+        super().__init__(bus, "/repos")
+        self.cfg = cfg
+        self.itens = {}  # caminho -> dict
+        self.escaneado = 0
+        self.trava = threading.Lock()
+        self.escanear()
+
+    def escanear(self):
+        c = self.cfg
+        itens = {}
+        recentes = recentes_vscode() if c["recentes_vscode"] else {}
+        for pasta in achar_repos(c["pastas"], c["profundidade"], set(c["ignorar"])):
+            itens[str(pasta)] = {"git": True}
+        for pasta in recentes:
+            itens.setdefault(pasta, {"git": os.path.exists(os.path.join(pasta, ".git"))})
+        for caminho, item in itens.items():
+            p = Path(caminho)
+            item["nome"] = p.name
+            item["busca_nome"] = normalizar(p.name)
+            item["busca_caminho"] = normalizar(til(caminho))
+            item["recente"] = recentes.get(caminho, 0)
+            item["branch"], item["web"] = ler_git(p) if item["git"] else (None, None)
+        with self.trava:
+            self.itens = itens
+            self.escaneado = time.time()
+
+    def talvez_reescanear(self):
+        if time.time() - self.escaneado > self.cfg["reescanear"]:
+            self.escaneado = time.time()  # evita disparar duas vezes
+            threading.Thread(target=self.escanear, daemon=True).start()
+
+    @staticmethod
+    def pontuar(termo, item):
+        nome, caminho = item["busca_nome"], item["busca_caminho"]
+        if nome == termo:
+            return 1.0
+        if nome.startswith(termo):
+            return 0.9
+        if termo in nome:
+            return 0.8
+        palavras = termo.split()
+        if len(palavras) > 1 and all(w in caminho for w in palavras):
+            return 0.7
+        if len(termo) >= 3:
+            it = iter(nome)
+            if all(c in it for c in termo):  # letras na ordem: "pkcs" -> PokeCroc_Server
+                return 0.5
+        return 0
+
+    @dbus.service.method(IFACE, in_signature="s", out_signature="a(sssida{sv})")
+    def Match(self, query):
+        c = self.cfg
+        q = query.strip()
+        palavra = c["palavra"]
+        com_palavra = q == palavra or q.startswith(palavra + " ")
+        termo = normalizar(q[len(palavra):].strip() if com_palavra else q)
+        if not com_palavra and len(termo) < c["minimo"]:
+            return []
+        self.talvez_reescanear()
+        with self.trava:
+            itens = list(self.itens.items())
+        agora = time.time()
+        achados = []
+        for caminho, item in itens:
+            if termo:
+                nota = self.pontuar(termo, item)
+                if nota == 0 or (not com_palavra and nota < 0.8):
+                    continue
+            else:
+                nota = 0.5
+            if item["recente"]:  # aberto no VS Code nos últimos 30 dias sobe um pouco
+                nota += 0.1 * max(0.0, 1 - (agora - item["recente"]) / (30 * 86400))
+            achados.append((nota, caminho, item))
+        achados.sort(key=lambda a: (-a[0], -a[2]["recente"], a[2]["nome"]))
+        saida = []
+        for nota, caminho, item in achados[:10]:
+            extra = []
+            if item["branch"]:
+                extra.append(item["branch"])
+            if not item["git"]:
+                extra.append("recente do VS Code")
+            sub = til(caminho) + ("  ·  " + "  ·  ".join(extra) if extra else "")
+            acoes = ["terminal", "pasta"] + (["web"] if item["web"] else []) + ["copiar"]
+            icone = "vscode" if not item["git"] else "folder-git"
+            saida.append(resultado(caminho, item["nome"], icone, ALTA if com_palavra else MEDIA,
+                                   min(nota, 1.0), sub, acoes, ["file://" + caminho]))
+        return saida
+
+    @dbus.service.method(IFACE, out_signature="a(sss)")
+    def Actions(self):
+        return self.ACOES
+
+    @dbus.service.method(IFACE, in_signature="ss")
+    def Run(self, caminho, acao):
+        c = self.cfg
+        if acao == "terminal":
+            lancar(shlex.split(c["terminal"]) + ["--workdir", caminho] if "konsole" in c["terminal"]
+                   else shlex.split(c["terminal"]), cwd=caminho)
+        elif acao == "pasta":
+            lancar(shlex.split(c["arquivos"]) + [caminho])
+        elif acao == "web":
+            web = self.itens.get(caminho, {}).get("web")
+            if web:
+                lancar(["xdg-open", web])
+        elif acao == "copiar":
+            copiar(caminho)
+        else:
+            lancar(shlex.split(c["editor"]) + [caminho], cwd=caminho)
+
+    @dbus.service.method(IFACE)
+    def Teardown(self):
+        self.talvez_reescanear()
+
+
+# ---------------------------------------------------------------- docker
+
+class Docker(dbus.service.Object):
+    ACOES = [
+        ("logs", "Ver os logs", "view-list-text"),
+        ("shell", "Abrir um shell dentro", "utilities-terminal"),
+        ("restart", "Reiniciar", "view-refresh"),
+        ("stop", "Parar", "media-playback-stop"),
+        ("start", "Iniciar", "media-playback-start"),
+        ("copiar", "Copiar o nome", "edit-copy"),
+    ]
+
+    def __init__(self, bus, cfg):
+        super().__init__(bus, "/docker")
+        self.cfg = cfg
+        self.cache, self.quando = [], 0
+        self.estados = {}
+
+    def containers(self):
+        if time.time() - self.quando < 3:
+            return self.cache
+        try:
+            r = subprocess.run(["docker", "ps", "-a", "--format", "{{json .}}"],
+                               capture_output=True, text=True, timeout=3)
+            lista = [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            lista = []
+        self.cache, self.quando = lista, time.time()
+        return lista
+
+    @dbus.service.method(IFACE, in_signature="s", out_signature="a(sssida{sv})")
+    def Match(self, query):
+        q = query.strip()
+        palavra = self.cfg["palavra"]
+        if not (q == palavra or q.startswith(palavra + " ")):
+            return []
+        termo = normalizar(q[len(palavra):].strip())
+        saida = []
+        for c in self.containers():
+            nome = c.get("Names", "")
+            rotulos = c.get("Labels", "")
+            projeto = (re.search(r"com\.docker\.compose\.project=([^,]+)", rotulos) or [None, ""])[1]
+            if termo and termo not in normalizar(nome) and termo not in normalizar(projeto):
+                continue
+            rodando = c.get("State") == "running"
+            self.estados[nome] = rodando
+            partes = [c.get("Status", ""), c.get("Image", "")]
+            if projeto:
+                partes.append(f"compose: {projeto}")
+            acoes = ["logs", "shell", "restart", "stop", "copiar"] if rodando else ["start", "logs", "copiar"]
+            nota = 1.0 if normalizar(nome) == termo else (0.8 if rodando else 0.6)
+            icone = "docker" if rodando else "media-playback-paused"
+            saida.append(resultado(nome, nome, icone, ALTA, nota, "  ·  ".join(p for p in partes if p), acoes))
+        saida.sort(key=lambda r: -r[4])
+        return saida[:15]
+
+    @dbus.service.method(IFACE, out_signature="a(sss)")
+    def Actions(self):
+        return self.ACOES
+
+    def comando(self, nome, verbo):
+        r = subprocess.run(["docker", verbo, nome], capture_output=True, text=True)
+        if r.returncode == 0:
+            avisar(f"{nome}: {verbo} ok", "", "docker")
+        else:
+            avisar(f"{nome}: {verbo} falhou", r.stderr.strip()[:300], "dialog-error")
+        self.quando = 0
+
+    @dbus.service.method(IFACE, in_signature="ss")
+    def Run(self, nome, acao):
+        term = shlex.split(self.cfg["terminal"])
+        if not acao:  # Enter: logs se está rodando, start se está parado
+            acao = "logs" if self.estados.get(nome, True) else "start"
+        if acao == "logs":
+            lancar(term + ["-e", "docker", "logs", "-f", "--tail", "300", nome])
+        elif acao == "shell":
+            lancar(term + ["-e", "docker", "exec", "-it", nome, "sh", "-c",
+                           "command -v bash >/dev/null && exec bash || exec sh"])
+        elif acao in ("start", "stop", "restart"):
+            threading.Thread(target=self.comando, args=(nome, acao), daemon=True).start()
+        elif acao == "copiar":
+            copiar(nome)
+
+    @dbus.service.method(IFACE)
+    def Teardown(self):
+        self.quando = 0
+
+
+def main():
+    if sys.argv[1:2] == ["reiniciar"]:
+        # Mata o serviço (o D-Bus sobe de novo na próxima busca) e reinicia o KRunner pra ele
+        # reler os plugins. Só fechar o KRunner não serve: o Alt+Espaço não consegue abrir ele de volta.
+        subprocess.run(["pkill", "-f", "python3? .*krocket$"], check=False)
+        subprocess.run(["systemctl", "--user", "restart", "plasma-krunner"], capture_output=True, check=False)
+        return
+    if "--testar" in sys.argv:  # krocket --testar "vs poke": mostra o que o KRunner receberia
+        DBusGMainLoop(set_as_default=True)
+        cfg = carregar_config()
+        bus = dbus.SessionBus()
+        q = " ".join(a for a in sys.argv[1:] if a != "--testar")
+        for plugin in (Repos(bus, cfg["repos"]), Docker(bus, cfg["docker"])):
+            for r in plugin.Match(q):
+                print(f"[{type(plugin).__name__}] {r[1]:<30} {r[4]:.2f}  {r[5]['subtext']}")
+        return
+    DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+    nome = dbus.service.BusName(SERVICO, bus, do_not_queue=True)  # noqa: F841 (segura o nome no bus)
+    cfg = carregar_config()
+    Repos(bus, cfg["repos"])
+    Docker(bus, cfg["docker"])
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()
