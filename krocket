@@ -1370,7 +1370,12 @@ def ligar_atalho(tecla):
     acao = dbus.Array(["krocket.desktop", "_launch", "krocket", "krocket"], signature="s")
     ka.doRegister(acao, dbus_interface="org.kde.KGlobalAccel")
     teclas = dbus.Array([dbus.Struct([dbus.Array([codigo, 0, 0, 0], signature="i")])], signature="(ai)")
-    ka.setForeignShortcutKeys(acao, teclas, dbus_interface="org.kde.KGlobalAccel")
+    # SetPresent (2) marca o atalho como ativo: sem isso o KDE guarda a tecla mas não escuta.
+    # NoAutoloading (4) faz valer a tecla passada, e não a que estiver salva.
+    ka.setShortcutKeys(acao, teclas, dbus.UInt32(2 | 4), dbus_interface="org.kde.KGlobalAccel")
+    comp = dbus.SessionBus().get_object("org.kde.kglobalaccel", "/component/krocket_desktop")
+    if not comp.isActive(dbus_interface="org.kde.kglobalaccel.Component"):
+        sys.exit("O KDE registrou a tecla mas não ativou. Ligue em Configurações do Sistema → Atalhos.")
     print(f"krocket menu ligado a {tecla}.")
 
 
