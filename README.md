@@ -56,6 +56,7 @@ Esses se somam aos que já vêm no KDE (`gg:` Google, `yt:` YouTube, `wp:` Wikip
 - **Enter** faz a ação padrão, igual no KRunner. **Shift+Enter** abre a lista de ações (terminal, Claude Code, pull, logs, restart...).
 - **Texto solto + Enter:** `ia <pergunta>` responde ali no menu, `hm <tarefa>` manda pro Hermes, `aur:yay` usa um atalho de busca, e qualquer outra coisa vai pro Google. Se o texto bater com algum item mas você quiser mandar ele mesmo assim, use **Ctrl+Enter**.
 - `kr` mostra a ajuda; escolher um comando reabre o menu já filtrado nele.
+- **O mesmo atalho abre e fecha:** apertar de novo com o menu aberto fecha ele.
 - **Fecha sozinho** quando você clica fora da caixa ou quando outra janela ganha o foco (Alt+Tab, clique na barra de tarefas). Clicar fora funciona em qualquer desktop. Pra perder o foco, o rofi sozinho não percebe no Wayland: no KDE o krocket carrega um script pequeno no KWin enquanto o menu está aberto (`menu/foco-kwin.js`), e no Hyprland escuta os eventos de janela dele.
 
 Pra ligar a uma tecla:

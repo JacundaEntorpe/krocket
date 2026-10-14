@@ -1424,6 +1424,15 @@ def fechar_rofi(idade_minima=0.4):
             pass
 
 
+def menu_aberto():
+    """True se outro "krocket menu" está com o rofi aberto agora."""
+    r = subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", r"krocket menu( |$)"], capture_output=True, text=True)
+    outros = [p for p in r.stdout.split() if int(p) != os.getpid()]
+    if not outros:
+        return False
+    return subprocess.run(["pgrep", "-u", str(os.getuid()), "-x", "rofi"], capture_output=True).returncode == 0
+
+
 class FocoMenu(dbus.service.Object):
     """/menu no serviço D-Bus: o script do KWin chama Fechar quando o menu perde o foco."""
 
@@ -1547,6 +1556,9 @@ def main():
     if sys.argv[1:2] == ["menu"]:
         if not shutil.which("rofi"):
             sys.exit("krocket menu precisa do rofi: sudo pacman -S rofi")
+        if menu_aberto():  # apertou o atalho com o menu aberto: fecha em vez de abrir outro
+            fechar_rofi(idade_minima=0)
+            return
         Menu(carregar_config()).rodar(" ".join(sys.argv[2:]))
         return
     DBusGMainLoop(set_as_default=True)
