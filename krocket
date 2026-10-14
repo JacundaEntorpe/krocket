@@ -1319,6 +1319,17 @@ class Menu:
         return None
 
     def rodar(self, filtro=""):
+        vigia = VigiaFoco()
+        vigia.ligar()
+        try:
+            self.laco(filtro)
+        finally:
+            vigia.desligar()
+        for t in threading.enumerate():  # espera docker/git/IA terminarem antes de sair
+            if t is not threading.main_thread() and t.name != "hyprland":
+                t.join()
+
+    def laco(self, filtro):
         while True:
             entradas = self.coletar()
             r = rofi(self.mc, entradas, mesg=RODAPE, filtro=filtro)
@@ -1331,9 +1342,89 @@ class Menu:
                 filtro = self.texto_livre(digitado)
             if filtro is None:
                 break
-        for t in threading.enumerate():  # espera docker/git/IA terminarem antes de sair
-            if t is not threading.main_thread():
-                t.join()
+
+
+def fechar_rofi(idade_minima=0.4):
+    """Fecha os rofi abertos há mais de idade_minima segundos. O menu que acabou de abrir
+    (um submenu, por exemplo) fica: ele é mais novo que isso."""
+    try:
+        agora = float(Path("/proc/uptime").read_text().split()[0])
+        por_seg = os.sysconf("SC_CLK_TCK")
+        pids = subprocess.run(["pgrep", "-u", str(os.getuid()), "-x", "rofi"],
+                              capture_output=True, text=True).stdout.split()
+    except OSError:
+        return
+    for pid in pids:
+        try:
+            inicio = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]) / por_seg
+            if agora - inicio > idade_minima:
+                os.kill(int(pid), 15)
+        except (OSError, ValueError, IndexError):
+            pass
+
+
+class FocoMenu(dbus.service.Object):
+    """/menu no serviço D-Bus: o script do KWin chama Fechar quando o menu perde o foco."""
+
+    def __init__(self, bus):
+        super().__init__(bus, "/menu")
+
+    @dbus.service.method("org.jacunda.krocket.Menu")
+    def Fechar(self):
+        fechar_rofi()
+
+
+class VigiaFoco:
+    """Fecha o menu quando outra janela ganha o foco. No KDE usa um script do KWin;
+    no Hyprland escuta os eventos dele. Nos outros desktops não faz nada."""
+    NOME_KWIN = "krocket-foco"
+
+    def __init__(self):
+        self.kwin = None
+        self.hypr = None
+
+    def ligar(self):
+        if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            threading.Thread(target=self.ouvir_hyprland, name="hyprland", daemon=True).start()
+            return
+        try:
+            bus = dbus.SessionBus()
+            scripting = bus.get_object("org.kde.KWin", "/Scripting")
+            iface = dbus.Interface(scripting, "org.kde.kwin.Scripting")
+            if iface.isScriptLoaded(self.NOME_KWIN):
+                return  # sobrou de um menu anterior: já está valendo
+            id_ = iface.loadScript(str(AQUI / "menu" / "foco-kwin.js"), self.NOME_KWIN, signature="ss")
+            if id_ >= 0:
+                bus.get_object("org.kde.KWin", f"/Scripting/Script{id_}").run(dbus_interface="org.kde.kwin.Script")
+                self.kwin = iface
+        except Exception as e:  # não é KDE, ou o KWin mudou: o menu funciona igual, só sem a vigia
+            print(f"krocket: sem fechar ao perder o foco ({e!r})", file=sys.stderr)
+
+    def ouvir_hyprland(self):
+        import socket
+        caminho = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "hypr" / \
+            os.environ["HYPRLAND_INSTANCE_SIGNATURE"] / ".socket2.sock"
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.connect(str(caminho))
+                self.hypr = s
+                for linha in s.makefile(errors="ignore"):
+                    if linha.startswith("activewindow>>"):
+                        fechar_rofi()
+        except OSError:
+            pass
+
+    def desligar(self):
+        if self.kwin:
+            try:
+                self.kwin.unloadScript(self.NOME_KWIN)
+            except dbus.DBusException:
+                pass
+        if self.hypr:
+            try:
+                self.hypr.shutdown(2)
+            except OSError:
+                pass
 
 
 def url_atalho(chave, termo):
@@ -1408,6 +1499,7 @@ def main():
         return
     nome = dbus.service.BusName(SERVICO, bus, do_not_queue=True)  # noqa: F841 (segura o nome no bus)
     montar(bus, cfg)
+    FocoMenu(bus)
     GLib.MainLoop().run()
 
 
