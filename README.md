@@ -52,9 +52,10 @@ Esses se somam aos que já vêm no KDE (`gg:` Google, `yt:` YouTube, `wp:` Wikip
 
 `krocket menu` abre os mesmos comandos num menu do rofi. Funciona no X11 e no Wayland, então serve pra Hyprland, Sway, GNOME, i3... e também no KDE, se você preferir ele ao KRunner.
 
-- **Digite** pra filtrar: `vs poke`, `gs`, `dk ani`, `sv docker`, `ts vps`. Sem palavra-chave ele busca em tudo de uma vez (`poke` acha repositórios e containers).
+- **Digite** pra filtrar: `vs poke`, `gs`, `dk ani`, `sv docker`, `ts vps`. Sem palavra-chave ele busca em tudo de uma vez: apps instalados (`viv` acha o Vivaldi, `config` as Configurações), repositórios, containers... O que bate melhor sobe pro topo, e os apps que você mais abre ganham prioridade.
+- **Contas:** digite `2^10*3`, `15% de 80` ou `sqrt(2)` e Enter: o resultado aparece grande e já vai pra área de transferência.
 - **Enter** faz a ação padrão, igual no KRunner. **Shift+Enter** abre a lista de ações (terminal, Claude Code, pull, logs, restart...).
-- **Texto solto + Enter:** `ia <pergunta>` responde ali no menu, `hm <tarefa>` manda pro Hermes, `aur:yay` usa um atalho de busca, e qualquer outra coisa vai pro Google. Se o texto bater com algum item mas você quiser mandar ele mesmo assim, use **Ctrl+Enter**.
+- **Texto solto + Enter:** uma conta é resolvida, `ia <pergunta>` responde ali no menu, `hm <tarefa>` manda pro Hermes, `aur:yay` usa um atalho de busca, e qualquer outra coisa vai pro Google. Se o texto bater com algum item mas você quiser mandar ele mesmo assim, use **Ctrl+Enter**.
 - `kr` mostra a ajuda; escolher um comando reabre o menu já filtrado nele.
 - **O mesmo atalho abre e fecha:** apertar de novo com o menu aberto fecha ele.
 - **Fecha sozinho** quando você clica fora da caixa ou quando outra janela ganha o foco (Alt+Tab, clique na barra de tarefas). Clicar fora funciona em qualquer desktop. Pra perder o foco, o rofi sozinho não percebe no Wayland: no KDE o krocket carrega um script pequeno no KWin enquanto o menu está aberto (`menu/foco-kwin.js`), e no Hyprland escuta os eventos de janela dele.

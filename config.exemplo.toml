@@ -49,6 +49,9 @@ palavra = "hm"
 comando = "hermes"
 terminal = "konsole"
 
+[apps]                  # só no menu do rofi; no KRunner os apps já aparecem
+palavra = "app"         # "app fire" mostra só apps
+
 [ajuda]
 palavra = "kr"
 
