@@ -52,7 +52,7 @@ Esses se somam aos que já vêm no KDE (`gg:` Google, `yt:` YouTube, `wp:` Wikip
 
 `krocket menu` abre os mesmos comandos num menu do rofi. Funciona no X11 e no Wayland, então serve pra Hyprland, Sway, GNOME, i3... e também no KDE, se você preferir ele ao KRunner.
 
-- **Digite** pra filtrar: `vs poke`, `gs`, `dk ani`, `sv docker`, `ts vps`. Sem palavra-chave ele busca em tudo de uma vez: apps instalados (`viv` acha o Vivaldi, `config` as Configurações), repositórios, containers... O que bate melhor sobe pro topo, e os apps que você mais abre ganham prioridade.
+- **Digite** pra filtrar: `vs poke`, `gs`, `dk ani`, `sv docker`, `ts vps`. Sem palavra-chave ele busca em tudo de uma vez: apps instalados (`viv` acha o Vivaldi, `config` as Configurações), repositórios, containers... O que bate pelo nome sobe pro topo (a busca é por começo de palavra: `server` acha `PokeCroc_Server`, `gs` não pega "logs"); quem bate só pela descrição vem depois. Os apps que você mais abre ganham prioridade.
 - **Contas:** digite `2^10*3`, `15% de 80` ou `sqrt(2)` e Enter: o resultado aparece grande e já vai pra área de transferência.
 - **Enter** faz a ação padrão, igual no KRunner. **Shift+Enter** abre a lista de ações (terminal, Claude Code, pull, logs, restart...).
 - **Texto solto + Enter:** uma conta é resolvida, `ia <pergunta>` responde ali no menu, `hm <tarefa>` manda pro Hermes, `aur:yay` usa um atalho de busca, e qualquer outra coisa vai pro Google. Se o texto bater com algum item mas você quiser mandar ele mesmo assim, use **Ctrl+Enter**.

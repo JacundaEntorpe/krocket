@@ -220,6 +220,7 @@ class Plugin(dbus.service.Object):
     DESCRICAO = ""
     ICONE = "system-run"
     ACAO_PADRAO = "Abrir"  # o que o Enter faz (aparece no topo do Shift+Enter); None = já está na lista
+    DESCRICAO_NA_LINHA = True  # no menu, mostra o subtexto do lado do nome (False = só na busca)
 
     LIMITE = 15  # quantos resultados no KRunner (o menu do rofi mostra todos)
 
@@ -1149,6 +1150,9 @@ class Apps(Plugin):
     ICONE = "applications-all"
     ACAO_PADRAO = "Abrir"
     LIMITE = 500
+    # "Internet Messenger", "Monitor de sistema"... só atrapalham a ordem (o rofi pontua a linha
+    # inteira); continuam valendo pra busca
+    DESCRICAO_NA_LINHA = False
     ACOES = [("pasta", "Mostrar o arquivo .desktop", "document-open-folder")]
     USO = CACHE / "uso-apps.json"
 
@@ -1355,6 +1359,7 @@ def rofi(cfg, entradas, prompt="krocket", mesg="", filtro="", linhas_max=None, d
     Cada entrada escrita vai pra lista vistas (é ela que o índice devolvido referencia)."""
     cmd = ["rofi", "-dmenu", "-i", "-markup-rows", "-show-icons", "-format", "i f", "-p", prompt,
            "-async-pre-read", "0", "-sort", "-sorting-method", "fzf",  # o que bate melhor sobe
+           "-matching", "prefix",  # cada palavra digitada casa com o começo de uma palavra (gs não pega "logs")
            "-theme", tema_rofi(cfg), "-kb-accept-alt", "", "-kb-custom-1", "Shift+Return",
            # Clique fora da caixa fecha; clique num item abre direto (o clique no item tem prioridade)
            "-kb-cancel", "Escape,Control+g,Control+bracketleft,MousePrimary,MouseSecondary",
@@ -1410,6 +1415,15 @@ class Menu:
             p.LIMITE = 500  # no menu cabe tudo, o rofi filtra
         self.por_tipo = {type(p).__name__: p for p in self.plugins}
 
+    @staticmethod
+    def palavras(texto):
+        """'PokeCroc_Server' -> 'pokecroc_server poke croc server': a busca do rofi é por
+        início de palavra, e _ - . e CamelCase não separam palavras pra ele."""
+        texto = str(texto)
+        partes = re.sub(r"([a-z])([A-Z])", r"\1 \2", texto)
+        partes = re.sub(r"[_\-./+]+", " ", partes)
+        return normalizar(f"{texto} {partes}")
+
     def linha(self, palavra, texto, sub):
         t = f"<span foreground='{self.mc['cor_palavra']}' font_weight='bold'>{esc(palavra)}</span>  {esc(texto)}"
         if sub:
@@ -1421,9 +1435,10 @@ class Menu:
         for id_, texto, icone, _rel, _nota, props in resultados:
             sub = str(props.get("subtext", ""))
             yield {
-                "texto": self.linha(palavra, texto, sub), "icone": icone, "plugin": p, "id": str(id_),
-                "nome": str(texto), "acoes": [str(a) for a in props["actions"]] if "actions" in props else None,
-                "meta": f"{palavra} {normalizar(str(texto))} {normalizar(sub)} {normalizar(str(props.get('busca', '')))}",
+                "texto": self.linha(palavra, texto, sub if p.DESCRICAO_NA_LINHA else ""), "icone": icone,
+                "plugin": p, "id": str(id_), "nome": str(texto),
+                "acoes": [str(a) for a in props["actions"]] if "actions" in props else None,
+                "meta": f"{palavra} {self.palavras(texto)} {self.palavras(sub)} {self.palavras(props.get('busca', ''))}",
             }
 
     def coletar(self):
