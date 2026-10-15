@@ -7,6 +7,7 @@ Um lançador pra quem programa: repositórios, git, Docker, serviços, Tailscale
 | `kr` | Lista todos os comandos do krocket, os atalhos web e uns truques do KRunner | Abre o KRunner já no comando escolhido |
 | `vs poke` ou só `poke` | Repositórios git e pastas recentes do VS Code | Abre no VS Code |
 | `gs` / `gs poke` | Repositórios com alterações, commits sem push ou atrás do remote | Abre no VS Code |
+| `pa` / `pa sprites` | Pastas comuns (sem git) dentro das pastas do krocket, com o caminho do lado | Abre no Dolphin |
 | `dk` / `dk ani` | Containers Docker (pelo nome ou pelo projeto compose) | Logs (ou inicia, se estiver parado) |
 | `sv` / `sv docker` | Serviços do systemd, do sistema e do usuário. `sv` sozinho mostra os favoritos | Status com as últimas linhas do log |
 | `ts` / `ts vps` | Aparelhos da rede Tailscale, online primeiro | Copia o IP |
@@ -20,7 +21,8 @@ Sem a palavra-chave, só os repositórios aparecem (a partir de 3 letras e quand
 
 Cada resultado tem botões de ação ao lado (passe o mouse, ou selecione e use **Tab**/**seta pra direita**):
 
-- **Repositório (`vs`, `gs`):** terminal, Claude Code na pasta, Dolphin, remote no navegador (GitHub/GitLab), `git pull`, `git push` (no `gs`), copiar o caminho. Dá pra arrastar o resultado pra qualquer lugar que aceite pastas.
+- **Repositório (`vs`, `gs`):** terminal (janela nova ou aba nova na janela aberta), Claude Code na pasta, Dolphin, remote no navegador (GitHub/GitLab), `git pull`, `git push` (no `gs`), copiar o caminho. Dá pra arrastar o resultado pra qualquer lugar que aceite pastas.
+- **Pasta (`pa`):** terminal (janela ou aba nova), VS Code, Claude Code, copiar o caminho.
 - **`gs`:** o último item, "Buscar atualizações de todos", roda `git fetch` em todos os repositórios e avisa quais têm coisa nova pra puxar. Sem isso, o ↓ mostra o que o git sabia no último fetch.
 - **Container:** logs, shell dentro, reiniciar, parar, iniciar, copiar o nome.
 - **Serviço:** logs ao vivo, reiniciar, parar, iniciar. Serviço do sistema pede a senha numa janela do KDE.
@@ -53,9 +55,10 @@ Esses se somam aos que já vêm no KDE (`gg:` Google, `yt:` YouTube, `wp:` Wikip
 `krocket menu` abre os mesmos comandos num menu do rofi. Funciona no X11 e no Wayland, então serve pra Hyprland, Sway, GNOME, i3... e também no KDE, se você preferir ele ao KRunner.
 
 - **Digite** pra filtrar: `vs poke`, `gs`, `dk ani`, `sv docker`, `ts vps`. Sem palavra-chave ele busca em tudo de uma vez: apps instalados (`viv` acha o Vivaldi, `config` as Configurações), repositórios, containers... O que bate pelo nome sobe pro topo (a busca é por começo de palavra: `server` acha `PokeCroc_Server`, `gs` não pega "logs"); quem bate só pela descrição vem depois. Os apps que você mais abre ganham prioridade.
+- **Janelas e arquivos** (só no menu; o KRunner já tem os dele): as janelas abertas aparecem quando você digita algo do título (`ja` lista todas), e Enter vai pra janela. Arquivos vêm da busca do KDE (Baloo): `ar relatório` + Enter mostra documentos, imagens e pastas, com a pasta onde cada um está. Assim o menu não se enche de arquivo enquanto você digita outra coisa.
 - **Contas:** digite `2^10*3`, `15% de 80` ou `sqrt(2)` e Enter: o resultado aparece grande e já vai pra área de transferência.
 - **Enter** faz a ação padrão, igual no KRunner. **Shift+Enter** abre a lista de ações (terminal, Claude Code, pull, logs, restart...).
-- **Texto solto + Enter:** uma conta é resolvida, `ia <pergunta>` responde ali no menu, `hm <tarefa>` manda pro Hermes, `aur:yay` usa um atalho de busca, e qualquer outra coisa vai pro Google. Se o texto bater com algum item mas você quiser mandar ele mesmo assim, use **Ctrl+Enter**.
+- **Texto solto + Enter:** uma conta é resolvida, `ia <pergunta>` responde ali no menu, `hm <tarefa>` manda pro Hermes, `aur:yay` usa um atalho de busca, e qualquer outra coisa vai pro Google. Se o texto bater com algum item mas você quiser mandar ele mesmo assim, use **Ctrl+Enter**. **Ctrl+A** apaga o que foi digitado.
 - `kr` mostra a ajuda; escolher um comando reabre o menu já filtrado nele.
 - **O mesmo atalho abre e fecha:** apertar de novo com o menu aberto fecha ele.
 - **Fecha sozinho** quando você clica fora da caixa ou quando outra janela ganha o foco (Alt+Tab, clique na barra de tarefas). Clicar fora funciona em qualquer desktop. Pra perder o foco, o rofi sozinho não percebe no Wayland: no KDE o krocket carrega um script pequeno no KWin enquanto o menu está aberto (`menu/foco-kwin.js`), e no Hyprland escuta os eventos de janela dele.
@@ -64,7 +67,7 @@ Pra ligar a uma tecla:
 
 | Desktop | Como |
 |---|---|
-| KDE | O `instalar.sh` já liga em `Meta+Espaço`. Pra trocar: `krocket atalho Ctrl+Alt+K` (vale na hora; `krocket atalho` sozinho mostra a tecla atual). Uma tecla que já é de outro atalho (o `Alt+Espaço` é do KRunner) precisa ser liberada antes em Configurações do Sistema → Atalhos |
+| KDE | O `instalar.sh` pergunta a tecla (Enter = `Meta+Espaço`; ou já passe `./instalar.sh --atalho Alt+Space`) e avisa se ela já for de outro atalho. Pra trocar depois: `krocket atalho Ctrl+Alt+K` (vale na hora; `krocket atalho` sozinho mostra a tecla atual). Uma tecla que já é de outro atalho (o `Alt+Espaço` é do KRunner) precisa ser liberada antes em Configurações do Sistema → Atalhos |
 | Hyprland | `bind = SUPER, SPACE, exec, krocket menu` no `hyprland.conf` |
 | Sway / i3 | `bindsym $mod+space exec krocket menu` |
 | GNOME | Configurações → Teclado → Atalhos personalizados → comando `krocket menu` |

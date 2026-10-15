@@ -14,7 +14,7 @@
     selecionado:  #2e2e35;     /* fundo da linha selecionada */
     escurecer:    #0000004d;   /* a tela atrás do menu; 00000000 = sem escurecer */
 
-    font:             "Noto Sans 11";
+    font:             "Noto Sans 10";
     background-color: transparent;
     text-color:       @texto;
 }
@@ -24,51 +24,51 @@
 window {
     fullscreen:       true;
     background-color: @escurecer;
-    /* 18% = distância do topo; 22em = metade da largura da caixa (44em de largura) */
-    padding:          18% calc( 50% - 22em ) 0;
+    /* 0 = colado no topo, como o KRunner; 16em = metade da largura da caixa (32em de largura) */
+    padding:          0 calc( 50% - 16em ) 0;
 }
 
 mainbox {
     expand:           false;
-    spacing:          10px;
+    spacing:          6px;
     children:         [ inputbar, listview, message ];
     background-color: @fundo;
-    border:           2px;
+    border:           0 1px 1px 1px;   /* colada no topo: sem borda em cima */
     border-color:     @destaque;
-    border-radius:    14px;
-    padding:          14px;
+    border-radius:    0 0 10px 10px;
+    padding:          8px;
 }
 
 inputbar {
     children:         [ prompt, entry ];
-    spacing:          12px;
-    padding:          10px 14px;
+    spacing:          10px;
+    padding:          6px 10px;
     background-color: @fundo-caixa;
-    border-radius:    10px;
+    border-radius:    6px;
 }
 
 prompt {
     text-color: @destaque;
-    font:       "Noto Sans Bold 11";
+    font:       "Noto Sans Bold 10";
 }
 
 entry {
-    placeholder:       "vs, gs, dk, sv, ts, ia, hm... ou kr pra ajuda";
+    placeholder:       "vs, pa, ja, ar, gs, dk, sv, ia... ou kr pra ajuda";
     placeholder-color: @apagado;
     cursor:            text;
 }
 
 listview {
-    lines:        10;          /* quantas linhas aparecem de uma vez */
-    fixed-height: true;
-    spacing:      2px;
+    lines:        12;          /* quantas linhas aparecem de uma vez */
+    fixed-height: true;        /* altura fixa: com a lista chegando aos poucos, o rofi não consegue encolher a caixa */
+    spacing:      0;
     scrollbar:    false;
 }
 
 element {
-    padding:       6px 12px;
-    spacing:       12px;
-    border-radius: 8px;
+    padding:       4px 10px;
+    spacing:       10px;
+    border-radius: 6px;
 }
 
 element normal.normal, element alternate.normal {
@@ -82,7 +82,7 @@ element selected.normal {
 }
 
 element-icon {
-    size: 1.4em;
+    size: 1.2em;
 }
 
 element-text {
@@ -91,14 +91,14 @@ element-text {
 }
 
 message {
-    padding:          8px 12px;
+    padding:          4px 10px;
     background-color: @fundo-caixa;
-    border-radius:    10px;
+    border-radius:    6px;
 }
 
 textbox {
     text-color: @apagado;
-    font:       "Noto Sans 9";
+    font:       "Noto Sans 8";
 }
 
 /* janela "Perguntando pro gemma..." e mensagens de erro */
@@ -113,5 +113,5 @@ error-message {
 
 error-message textbox {
     text-color: @texto;
-    font:       "Noto Sans 11";
+    font:       "Noto Sans 10";
 }

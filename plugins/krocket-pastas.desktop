@@ -1,0 +1,17 @@
+[Desktop Entry]
+Name=Pastas
+Comment=Pastas comuns (sem git) dentro das pastas do krocket
+Type=Service
+Icon=folder
+X-KDE-ServiceTypes=Plasma/Runner
+X-KDE-PluginInfo-Author=JacundaEntorpe
+X-KDE-PluginInfo-Name=krocket-pastas
+X-KDE-PluginInfo-Version=1.1
+X-KDE-PluginInfo-License=MIT
+X-KDE-PluginInfo-EnabledByDefault=true
+X-Plasma-API=DBus
+X-Plasma-DBusRunner-Service=org.jacunda.krocket
+X-Plasma-DBusRunner-Path=/pastas
+X-Plasma-Request-Actions-Once=true
+X-Plasma-Runner-Syntaxes=pa :q:
+X-Plasma-Runner-Syntax-Descriptions=Abre a pasta cujo nome bate com :q: (as que não são repositório)

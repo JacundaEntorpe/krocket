@@ -4,8 +4,8 @@
 #
 #   ./instalar.sh                      instala tudo
 #   ./instalar.sh --sem-atalhos        não instala os atalhos de busca na web
-#   ./instalar.sh --atalho "Meta+Space"   no KDE, liga o menu do rofi a essa tecla
-#                                      (sem isso: Meta+Espaço, se o krocket ainda não tiver tecla)
+#   ./instalar.sh --atalho "Alt+Space"    no KDE, liga o menu do rofi a essa tecla
+#                                      (sem isso, se o menu ainda não tiver tecla, pergunta qual quer)
 set -euo pipefail
 AQUI="$(cd "$(dirname "$0")" && pwd)"
 DADOS="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -62,13 +62,23 @@ if [[ $KDE == 1 ]]; then
   mkdir -p "$DADOS/krunner/dbusplugins"
   cp "$AQUI"/plugins/*.desktop "$DADOS/krunner/dbusplugins/"
   kbuildsycoca6 >/dev/null 2>&1 || true  # o KDE passa a conhecer o krocket.desktop
-  if [[ -z "$TECLA" ]] && ! "$AQUI/krocket" atalho >/dev/null 2>&1; then
-    TECLA="Meta+Space"  # primeira instalação: o menu ainda não tem tecla
+  if [[ -n "$TECLA" ]]; then
+    "$AQUI/krocket" atalho "$TECLA" || true
+  elif ! "$AQUI/krocket" atalho >/dev/null 2>&1; then  # o menu ainda não tem tecla
+    if [[ -t 0 ]]; then
+      # Pergunta até dar certo: uma tecla ocupada (o Alt+Espaço é do KRunner) avisa de quem é
+      while true; do
+        read -rp "Tecla pro menu do krocket (Enter = Meta+Space, n = nenhuma): " TECLA
+        [[ $TECLA == [nN] ]] && break
+        "$AQUI/krocket" atalho "${TECLA:-Meta+Space}" && break
+      done
+    else
+      "$AQUI/krocket" atalho Meta+Space || true
+    fi
   fi
-  [[ -n "$TECLA" ]] && { "$AQUI/krocket" atalho "$TECLA" || true; }
   "$AQUI/krocket" reiniciar
   echo "Pronto. Menu do krocket: $( "$AQUI/krocket" atalho 2>/dev/null || echo "sem tecla (krocket atalho Meta+Space)")."
-  echo "No KRunner (Alt+Espaço), digite \"kr\" pra ver todos os comandos."
+  echo "No KRunner, digite \"kr\" pra ver todos os comandos."
 else
   echo "Pronto. Ligue o comando \"krocket menu\" a uma tecla no seu desktop (veja o README)."
 fi

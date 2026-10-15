@@ -15,6 +15,7 @@
 Roda como um serviço D-Bus (org.kde.krunner1). O KRunner sobe ele sozinho pela
 ativação do D-Bus; não precisa deixar rodando. Config: ~/.config/krocket/config.toml
 """
+import glob
 import json
 import os
 import re
@@ -60,6 +61,7 @@ PADRAO = {
         "reescanear": 120,  # segundos
     },
     "git": {"palavra": "gs"},
+    "pastas": {"palavra": "pa"},  # usa as pastas do [repos]
     "docker": {"palavra": "dk", "terminal": "konsole"},
     "servicos": {
         "palavra": "sv",
@@ -80,6 +82,8 @@ PADRAO = {
     },
     "hermes": {"palavra": "hm", "comando": "hermes", "terminal": "konsole"},
     "apps": {"palavra": "app"},  # só no menu do rofi (o KRunner já acha apps sozinho)
+    "janelas": {"palavra": "ja"},  # só no menu do rofi, idem
+    "arquivos": {"palavra": "ar"},  # só no menu do rofi, idem
     "ajuda": {"palavra": "kr"},
     "menu": {
         "tema": "~/.config/krocket/tema.rasi",
@@ -121,11 +125,16 @@ def lancar(cmd, cwd=None, env=None):
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def no_terminal(terminal, args, cwd=None, segurar=False):
+def no_terminal(terminal, args, cwd=None, segurar=False, aba=False):
     """Roda args num terminal novo. segurar=True deixa a janela aberta quando o comando termina.
-    Cada terminal recebe pasta, "segurar" e comando de um jeito; os comuns estão aqui."""
+    aba=True abre numa aba da janela que já está aberta (Konsole, GNOME Terminal, Xfce; os outros
+    abrem janela nova). Cada terminal recebe pasta, "segurar" e comando de um jeito; os comuns estão aqui."""
     term = shlex.split(terminal)
     nome = Path(term[0]).name
+    if aba and nome == "konsole":
+        term.append("--new-tab")
+    elif aba and nome in ("gnome-terminal", "xfce4-terminal"):
+        term.append("--tab")
     if segurar and args and nome not in ("konsole", "kitty", "foot", "alacritty", "xterm"):
         args = ["sh", "-c", 'eval "$0"; printf "\n[Enter fecha]"; read _', shlex.join(args)]
         segurar = False
@@ -303,13 +312,17 @@ def url_web(remote):
     return None
 
 
-def achar_repos(pastas, profundidade, ignorar):
+def achar_repos(pastas, profundidade, ignorar, comuns=None):
+    """Repositórios git dentro das pastas. Se comuns for uma lista, ela recebe as outras
+    pastas do caminho (as de dentro de um repositório ficam de fora)."""
     achados = []
 
     def andar(d, nivel):
         if (d / ".git").exists():
             achados.append(d)
             return
+        if comuns is not None:
+            comuns.append(d)
         if nivel >= profundidade:
             return
         try:
@@ -382,7 +395,8 @@ class Repos(Plugin):
     DESCRICAO = "Abre um repositório no VS Code"
     ICONE = "folder-git"
     ACOES = [
-        ("terminal", "Abrir no terminal", "utilities-terminal"),
+        ("terminal", "Abrir no terminal (janela nova)", "utilities-terminal"),
+        ("aba", "Abrir numa aba nova do terminal", "tab-new"),
         ("claude", "Abrir o Claude Code aqui", "dialog-messages"),
         ("pasta", "Abrir no gerenciador de arquivos", "system-file-manager"),
         ("web", "Abrir o remote no navegador", "internet-web-browser"),
@@ -393,15 +407,16 @@ class Repos(Plugin):
     def __init__(self, bus, cfg):
         super().__init__(bus, cfg)
         self.itens = {}  # caminho -> dict
+        self.pastas = {}  # pastas sem git, pro plugin Pastas
         self.escaneado = 0
         self.trava = threading.Lock()
         self.escanear()
 
     def escanear(self):
         c = self.cfg
-        itens = {}
+        itens, comuns = {}, []
         recentes = recentes_vscode() if c["recentes_vscode"] else {}
-        for pasta in achar_repos(c["pastas"], c["profundidade"], set(c["ignorar"])):
+        for pasta in achar_repos(c["pastas"], c["profundidade"], set(c["ignorar"]), comuns):
             itens[str(pasta)] = {"git": True}
         for pasta in recentes:
             itens.setdefault(pasta, {"git": os.path.exists(os.path.join(pasta, ".git"))})
@@ -412,8 +427,14 @@ class Repos(Plugin):
             item["busca_caminho"] = normalizar(til(caminho))
             item["recente"] = recentes.get(caminho, 0)
             item["branch"], item["web"] = ler_git(p) if item["git"] else (None, None)
+        pastas = {}
+        for p in comuns:
+            caminho = str(p)
+            if caminho not in itens:
+                pastas[caminho] = {"nome": p.name, "busca_nome": normalizar(p.name),
+                                   "busca_caminho": normalizar(til(caminho))}
         with self.trava:
-            self.itens = itens
+            self.itens, self.pastas = itens, pastas
             self.escaneado = time.time()
 
     def talvez_reescanear(self):
@@ -425,6 +446,11 @@ class Repos(Plugin):
         self.talvez_reescanear()
         with self.trava:
             return dict(self.itens)
+
+    def lista_pastas(self):
+        self.talvez_reescanear()
+        with self.trava:
+            return dict(self.pastas)
 
     @staticmethod
     def pontuar(termo, item):
@@ -469,7 +495,7 @@ class Repos(Plugin):
             if not item["git"]:
                 extra.append("recente do VS Code")
             sub = til(caminho) + ("  ·  " + "  ·  ".join(extra) if extra else "")
-            acoes = ["terminal", "claude", "pasta"] + (["web", "pull"] if item["web"] else []) + ["copiar"]
+            acoes = ["terminal", "aba", "claude", "pasta"] + (["web", "pull"] if item["web"] else []) + ["copiar"]
             icone = "folder-git" if item["git"] else "vscode"
             saida.append(resultado(caminho, item["nome"], icone, ALTA if com_palavra else MEDIA,
                                    min(nota, 1.0), sub, acoes, ["file://" + caminho]))
@@ -481,8 +507,8 @@ class Repos(Plugin):
 
 def abrir_repo(c, caminho, acao, web=None):
     """Ações de repositório, compartilhadas entre o vs e o gs."""
-    if acao == "terminal":
-        no_terminal(c["terminal"], [], cwd=caminho)
+    if acao in ("terminal", "aba"):
+        no_terminal(c["terminal"], [], cwd=caminho, aba=acao == "aba")
     elif acao == "claude":
         no_terminal(c["terminal"], shlex.split(c["claude"]), cwd=caminho)
     elif acao == "pasta":
@@ -497,6 +523,40 @@ def abrir_repo(c, caminho, acao, web=None):
         copiar(caminho)
     else:
         lancar(shlex.split(c["editor"]) + [caminho], cwd=caminho)
+
+
+class Pastas(Plugin):
+    """Pastas comuns (sem git) dentro das pastas do [repos], pra entrar numa específica."""
+    ACAO_PADRAO = "Abrir no gerenciador de arquivos"
+    CAMINHO = "/pastas"
+    ID = "krocket-pastas"
+    DESCRICAO = "Abre uma pasta qualquer (as que não são repositório)"
+    ICONE = "folder"
+    ACOES = [
+        ("terminal", "Abrir no terminal (janela nova)", "utilities-terminal"),
+        ("aba", "Abrir numa aba nova do terminal", "tab-new"),
+        ("editor", "Abrir no VS Code", "vscode"),
+        ("claude", "Abrir o Claude Code aqui", "dialog-messages"),
+        ("copiar", "Copiar o caminho", "edit-copy"),
+    ]
+
+    def __init__(self, bus, cfg, repos):
+        super().__init__(bus, cfg)
+        self.repos = repos
+
+    def buscar(self, termo, com_palavra):
+        termo = normalizar(termo)
+        achados = []
+        for caminho, item in self.repos.lista_pastas().items():
+            nota = Repos.pontuar(termo, item) if termo else 0.5
+            if nota:
+                achados.append((nota, caminho, item))
+        achados.sort(key=lambda a: (-a[0], a[1]))
+        return [resultado(caminho, item["nome"], "folder", ALTA, nota, til(caminho), None, ["file://" + caminho])
+                for nota, caminho, item in achados[:self.LIMITE]]
+
+    def rodar(self, caminho, acao):
+        abrir_repo(self.repos.cfg, caminho, {"": "pasta", "editor": ""}.get(acao, acao))
 
 
 # ---------------------------------------------------------------- git status
@@ -534,7 +594,8 @@ class Git(Plugin):
     DESCRICAO = "Repositórios com alterações, commits sem push ou atrasados"
     ICONE = "vcs-locally-modified"
     ACOES = [
-        ("terminal", "Abrir no terminal", "utilities-terminal"),
+        ("terminal", "Abrir no terminal (janela nova)", "utilities-terminal"),
+        ("aba", "Abrir numa aba nova do terminal", "tab-new"),
         ("claude", "Abrir o Claude Code aqui", "dialog-messages"),
         ("pull", "git pull", "vcs-pull"),
         ("push", "git push", "vcs-push"),
@@ -592,7 +653,7 @@ class Git(Plugin):
                 icone = "vcs-push"
             else:
                 icone = "vcs-normal"
-            acoes = ["terminal", "claude"]
+            acoes = ["terminal", "aba", "claude"]
             if st["upstream"]:
                 acoes += ["pull", "push"]
             if itens[caminho]["web"]:
@@ -1211,6 +1272,108 @@ class Apps(Plugin):
             pass
 
 
+# ---------------------------------------------------------------- janelas e arquivos (só no menu)
+# No KRunner isso já existe: aqui o menu pergunta pros mesmos plugins do KDE pelo D-Bus.
+
+def runner_kde(servico, caminho):
+    return dbus.Interface(dbus.SessionBus().get_object(servico, caminho), "org.kde.krunner1")
+
+
+class Janelas(Plugin):
+    """Janelas abertas. No KDE pergunta pro KWin; no Hyprland, pro hyprctl."""
+    CAMINHO = "/janelas"
+    ID = "krocket-janelas"
+    DESCRICAO = "Janelas abertas"
+    ICONE = "window"
+    ACAO_PADRAO = "Ir pra janela"
+    DESCRICAO_NA_LINHA = False
+
+    def janelas(self):
+        """[(id, título, ícone)]"""
+        if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            try:
+                clientes = json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True,
+                                                     text=True, timeout=2).stdout)
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                return []
+            return [(c["address"], c["title"] or c["class"], c["class"].lower() or self.ICONE)
+                    for c in clientes if c.get("mapped", True) and (c["title"] or c["class"])]
+        try:
+            matches = runner_kde("org.kde.KWin", "/WindowsRunner").Match("")
+        except dbus.DBusException:
+            return []
+        vistas, saida = set(), []
+        for id_, titulo, icone, *_ in matches:
+            # "0_..." são janelas (vêm repetidas); o resto são áreas de trabalho
+            if str(id_).startswith("0_") and id_ not in vistas:
+                vistas.add(id_)
+                saida.append((str(id_), str(titulo), str(icone) or self.icone_do_titulo(str(titulo))))
+        return saida
+
+    def icone_do_titulo(self, titulo):
+        """O KWin não manda o ícone de alguns apps; "Amigos - Discord" vira o ícone "discord"."""
+        nome = re.split(r" [-—–] ", titulo)[-1].strip().lower().replace(" ", "-")
+        for padrao in (f"/usr/share/icons/hicolor/*/apps/{nome}.*", f"/usr/share/pixmaps/{nome}.*",
+                       str(DADOS / f"icons/hicolor/*/apps/{nome}.*"), f"/var/lib/flatpak/exports/share/icons/hicolor/*/apps/*{nome}*"):
+            if nome and glob.glob(padrao):
+                return nome if "flatpak" not in padrao else Path(glob.glob(padrao)[0]).stem
+        return self.ICONE
+
+    def buscar(self, termo, com_palavra):
+        termo = normalizar(termo)
+        return [resultado(id_, titulo, icone, ALTA, 0.5, "janela aberta")
+                for id_, titulo, icone in self.janelas() if not termo or termo in normalizar(titulo)]
+
+    def rodar(self, id_, acao):
+        if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            lancar(["hyprctl", "dispatch", "focuswindow", f"address:{id_}"])
+            return
+        try:
+            runner_kde("org.kde.KWin", "/WindowsRunner").Run(id_, "")
+        except dbus.DBusException as e:
+            avisar("Não deu pra ir pra janela", str(e), "dialog-error")
+
+
+class Arquivos(Plugin):
+    """Arquivos e pastas pela busca do KDE (Baloo). Não dá pra carregar tudo antes no menu,
+    então funciona como o "sv xyz": digita "ar relatório" e Enter."""
+    CAMINHO = "/arquivos"
+    ID = "krocket-arquivos"
+    DESCRICAO = "Busca arquivos (documentos, imagens...) pelo nome ou conteúdo"
+    ICONE = "system-search"
+    ACAO_PADRAO = "Abrir"
+    ACOES = [
+        ("pasta", "Abrir a pasta onde ele está", "document-open-folder"),
+        ("copiar", "Copiar o caminho", "edit-copy"),
+    ]
+
+    def buscar(self, termo, com_palavra):
+        if not termo:
+            return [resultado("", "Buscar arquivos", self.ICONE, ALTA, 1.0,
+                              f"{self.cfg['palavra']} <nome>  ·  Enter busca documentos, imagens e pastas")]
+        try:
+            matches = runner_kde("org.kde.runners.baloo", "/runner").Match(termo)
+        except dbus.DBusException:
+            return []
+        saida = []
+        for id_, nome, icone, _rel, nota, props in matches:
+            sub = "  ·  ".join(str(x) for x in (props.get("category", ""), props.get("subtext", "")) if x)
+            saida.append(resultado(str(id_), str(nome), str(icone), ALTA, float(nota), sub))
+        return saida
+
+    def rodar(self, url, acao):
+        caminho = unquote(urlparse(url).path)
+        if acao == "copiar":
+            copiar(caminho)
+        elif acao == "pasta":
+            try:  # o Baloo abre a pasta já com o arquivo selecionado
+                runner_kde("org.kde.runners.baloo", "/runner").Run(url, "openParentDir")
+            except dbus.DBusException:
+                lancar(["xdg-open", str(Path(caminho).parent)])
+        else:
+            lancar(["xdg-open", url])
+
+
 # ---------------------------------------------------------------- calculadora (só no menu)
 
 def calcular(texto):
@@ -1305,14 +1468,16 @@ def montar(bus, cfg):
     plugins = [
         repos,
         Git(bus, cfg["git"], repos),
+        Pastas(bus, cfg["pastas"], repos),
         Docker(bus, cfg["docker"]),
         Servicos(bus, cfg["servicos"]),
         Tailscale(bus, cfg["tailscale"]),
         IA(bus, cfg["ia"]),
         Hermes(bus, cfg["hermes"]),
     ]
-    if bus is None:  # menu do rofi: precisa achar apps; no KRunner isso já existe
+    if bus is None:  # menu do rofi: precisa achar apps, janelas e arquivos; no KRunner isso já existe
         plugins.insert(1, Apps(None, cfg["apps"]))
+        plugins += [Janelas(None, cfg["janelas"]), Arquivos(None, cfg["arquivos"])]
     return plugins + [Ajuda(bus, cfg["ajuda"], plugins)]
 
 
@@ -1361,6 +1526,7 @@ def rofi(cfg, entradas, prompt="krocket", mesg="", filtro="", linhas_max=None, d
            "-async-pre-read", "0", "-sort", "-sorting-method", "fzf",  # o que bate melhor sobe
            "-matching", "prefix",  # cada palavra digitada casa com o começo de uma palavra (gs não pega "logs")
            "-theme", tema_rofi(cfg), "-kb-accept-alt", "", "-kb-custom-1", "Shift+Return",
+           "-kb-move-front", "", "-kb-clear-line", "Control+a,Control+w",  # rofi não seleciona texto: Ctrl+A apaga tudo
            # Clique fora da caixa fecha; clique num item abre direto (o clique no item tem prioridade)
            "-kb-cancel", "Escape,Control+g,Control+bracketleft,MousePrimary,MouseSecondary",
            "-me-select-entry", "", "-me-accept-entry", "MousePrimary"]
@@ -1444,7 +1610,8 @@ class Menu:
     def coletar(self):
         """Tudo o que aparece no menu, na ordem: cada plugin roda em paralelo e as linhas
         saem assim que o plugin da vez termina (os repositórios ficam prontos na hora)."""
-        ordem = ["Repos", "Apps", "Git", "Docker", "Servicos", "Tailscale", "IA", "Hermes"]
+        # Janelas e pastas por último: no menu recém-aberto ficam fora da vista, só sobem quando batem com o digitado
+        ordem = ["Repos", "Apps", "Git", "Docker", "Servicos", "Tailscale", "IA", "Hermes", "Arquivos", "Janelas", "Pastas"]
         ex = ThreadPoolExecutor(len(ordem))
         try:
             futuros = [(self.por_tipo[t], ex.submit(self.por_tipo[t].Match, self.por_tipo[t].cfg["palavra"])) for t in ordem]

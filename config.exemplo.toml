@@ -18,6 +18,9 @@ reescanear = 120        # segundos entre uma varredura e outra
 [git]
 palavra = "gs"          # usa os mesmos repositórios do [repos]
 
+[pastas]
+palavra = "pa"          # pastas comuns (sem git) dentro das pastas do [repos]
+
 [docker]
 palavra = "dk"
 terminal = "konsole"
@@ -51,6 +54,12 @@ terminal = "konsole"
 
 [apps]                  # só no menu do rofi; no KRunner os apps já aparecem
 palavra = "app"         # "app fire" mostra só apps
+
+[janelas]               # só no menu do rofi (KDE e Hyprland)
+palavra = "ja"          # "ja" sozinho lista as janelas abertas
+
+[arquivos]              # só no menu do rofi, pela busca do KDE (Baloo)
+palavra = "ar"          # "ar relatório" + Enter busca arquivos
 
 [ajuda]
 palavra = "kr"
