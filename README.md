@@ -64,7 +64,7 @@ Pra ligar a uma tecla:
 
 | Desktop | Como |
 |---|---|
-| KDE | `krocket atalho Meta+Space` (vale na hora), ou Configurações do Sistema → Atalhos → procure "krocket" |
+| KDE | O `instalar.sh` já liga em `Meta+Espaço`. Pra trocar: `krocket atalho Ctrl+Alt+K` (vale na hora; `krocket atalho` sozinho mostra a tecla atual). Uma tecla que já é de outro atalho (o `Alt+Espaço` é do KRunner) precisa ser liberada antes em Configurações do Sistema → Atalhos |
 | Hyprland | `bind = SUPER, SPACE, exec, krocket menu` no `hyprland.conf` |
 | Sway / i3 | `bindsym $mod+space exec krocket menu` |
 | GNOME | Configurações → Teclado → Atalhos personalizados → comando `krocket menu` |

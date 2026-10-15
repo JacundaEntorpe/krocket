@@ -1693,6 +1693,25 @@ def url_atalho(chave, termo):
     return None
 
 
+def tecla_atual():
+    """Tecla do menu no KDE ("Meta+Space"), ou None se não tiver."""
+    nomes = {0x20: "Space", 0x01000004: "Return", 0x01000001: "Tab", 0x01000000: "Escape", 0x01000009: "Print"}
+    try:
+        ka = dbus.SessionBus().get_object("org.kde.kglobalaccel", "/kglobalaccel")
+        teclas = ka.shortcutKeys(dbus.Array(["krocket.desktop", "_launch", "krocket", "krocket"], signature="s"),
+                                 dbus_interface="org.kde.KGlobalAccel")
+    except dbus.DBusException:
+        return None
+    codigo = next((int(t[0][0]) for t in teclas if t[0] and t[0][0]), 0)
+    if not codigo:
+        return None
+    partes = [n for bit, n in ((0x10000000, "Meta"), (0x04000000, "Ctrl"), (0x08000000, "Alt"), (0x02000000, "Shift"))
+              if codigo & bit]
+    base = codigo & 0x01FFFFFF
+    partes.append(nomes.get(base) or (f"F{base - 0x01000030 + 1}" if 0x01000030 <= base <= 0x0100003B else chr(base)))
+    return "+".join(partes)
+
+
 def ligar_atalho(tecla):
     """Liga o menu a uma tecla no KDE, valendo na hora (sem sair da sessão)."""
     mods = {"meta": 0x10000000, "super": 0x10000000, "ctrl": 0x04000000, "control": 0x04000000,
@@ -1713,12 +1732,22 @@ def ligar_atalho(tecla):
         else:
             sys.exit(f"Não entendi a tecla \"{parte}\". Exemplos: Meta+Space, Ctrl+Alt+K, Meta+F1")
     ka = dbus.SessionBus().get_object("org.kde.kglobalaccel", "/kglobalaccel")
+    sequencia = dbus.Struct([dbus.Array([codigo, 0, 0, 0], signature="i")])
+    # O KDE recusa calado uma tecla que já é de outro atalho (Alt+Espaço é do KRunner, por exemplo)
+    donos = [str(d[3] or d[2]) for d in ka.globalShortcutsByKey(sequencia, dbus.Struct([dbus.Int32(0)]),
+                                                                dbus_interface="org.kde.KGlobalAccel")
+             if str(d[2]) != "krocket.desktop"]
+    if donos:
+        sys.exit(f"{tecla} já é de {', '.join(donos)}. Tire de lá em Configurações do Sistema → Atalhos "
+                 f"e rode \"krocket atalho {tecla}\" de novo, ou escolha outra tecla.")
     acao = dbus.Array(["krocket.desktop", "_launch", "krocket", "krocket"], signature="s")
     ka.doRegister(acao, dbus_interface="org.kde.KGlobalAccel")
-    teclas = dbus.Array([dbus.Struct([dbus.Array([codigo, 0, 0, 0], signature="i")])], signature="(ai)")
     # SetPresent (2) marca o atalho como ativo: sem isso o KDE guarda a tecla mas não escuta.
     # NoAutoloading (4) faz valer a tecla passada, e não a que estiver salva.
-    ka.setShortcutKeys(acao, teclas, dbus.UInt32(2 | 4), dbus_interface="org.kde.KGlobalAccel")
+    ficou = ka.setShortcutKeys(acao, dbus.Array([sequencia], signature="(ai)"), dbus.UInt32(2 | 4),
+                               dbus_interface="org.kde.KGlobalAccel")
+    if not any(s[0] and s[0][0] == codigo for s in ficou):
+        sys.exit(f"O KDE não aceitou {tecla}. Ligue em Configurações do Sistema → Atalhos → procure \"krocket\".")
     comp = dbus.SessionBus().get_object("org.kde.kglobalaccel", "/component/krocket_desktop")
     if not comp.isActive(dbus_interface="org.kde.kglobalaccel.Component"):
         sys.exit("O KDE registrou a tecla mas não ativou. Ligue em Configurações do Sistema → Atalhos.")
@@ -1735,6 +1764,10 @@ def main():
     if sys.argv[1:2] == ["atalho"] and len(sys.argv) == 3:  # krocket atalho Meta+Space (só no KDE)
         ligar_atalho(sys.argv[2])
         return
+    if sys.argv[1:] == ["atalho"]:  # mostra a tecla atual; sai com erro se não tiver
+        atual = tecla_atual()
+        print(atual or "O menu não tem tecla. Ligue com: krocket atalho Meta+Space")
+        sys.exit(0 if atual else 1)
     if sys.argv[1:2] == ["menu"]:
         if not shutil.which("rofi"):
             sys.exit("krocket menu precisa do rofi: sudo pacman -S rofi")

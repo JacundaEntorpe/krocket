@@ -5,6 +5,7 @@
 #   ./instalar.sh                      instala tudo
 #   ./instalar.sh --sem-atalhos        não instala os atalhos de busca na web
 #   ./instalar.sh --atalho "Meta+Space"   no KDE, liga o menu do rofi a essa tecla
+#                                      (sem isso: Meta+Espaço, se o krocket ainda não tiver tecla)
 set -euo pipefail
 AQUI="$(cd "$(dirname "$0")" && pwd)"
 DADOS="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -61,9 +62,13 @@ if [[ $KDE == 1 ]]; then
   mkdir -p "$DADOS/krunner/dbusplugins"
   cp "$AQUI"/plugins/*.desktop "$DADOS/krunner/dbusplugins/"
   kbuildsycoca6 >/dev/null 2>&1 || true  # o KDE passa a conhecer o krocket.desktop
-  [[ -n "$TECLA" ]] && "$AQUI/krocket" atalho "$TECLA"
+  if [[ -z "$TECLA" ]] && ! "$AQUI/krocket" atalho >/dev/null 2>&1; then
+    TECLA="Meta+Space"  # primeira instalação: o menu ainda não tem tecla
+  fi
+  [[ -n "$TECLA" ]] && { "$AQUI/krocket" atalho "$TECLA" || true; }
   "$AQUI/krocket" reiniciar
-  echo "Pronto. Alt+Espaço e digite \"kr\" pra ver todos os comandos."
+  echo "Pronto. Menu do krocket: $( "$AQUI/krocket" atalho 2>/dev/null || echo "sem tecla (krocket atalho Meta+Space)")."
+  echo "No KRunner (Alt+Espaço), digite \"kr\" pra ver todos os comandos."
 else
   echo "Pronto. Ligue o comando \"krocket menu\" a uma tecla no seu desktop (veja o README)."
 fi
