@@ -1608,15 +1608,23 @@ class Menu:
             }
 
     def coletar(self):
-        """Tudo o que aparece no menu, na ordem: cada plugin roda em paralelo e as linhas
-        saem assim que o plugin da vez termina (os repositórios ficam prontos na hora)."""
-        # Janelas e pastas por último: no menu recém-aberto ficam fora da vista, só sobem quando batem com o digitado
-        ordem = ["Repos", "Apps", "Git", "Docker", "Servicos", "Tailscale", "IA", "Hermes", "Arquivos", "Janelas", "Pastas"]
+        """Tudo o que aparece no menu. Como no KRunner, primeiro vêm uns poucos de cada tipo
+        (alguns apps, as janelas, uns repositórios...) e depois o resto. Cada plugin roda em
+        paralelo e as linhas saem assim que o plugin da vez termina."""
+        # (plugin, quantos entram na primeira rodada); o rofi desempata pela ordem, então isso
+        # também vale pra quando o digitado bate igual em várias coisas
+        ordem = [("Apps", 6), ("Janelas", 3), ("Repos", 3), ("Pastas", 2), ("Git", 2), ("Docker", 2),
+                 ("Servicos", 2), ("Tailscale", 2), ("IA", 1), ("Hermes", 1), ("Arquivos", 1)]
         ex = ThreadPoolExecutor(len(ordem))
         try:
-            futuros = [(self.por_tipo[t], ex.submit(self.por_tipo[t].Match, self.por_tipo[t].cfg["palavra"])) for t in ordem]
-            for p, futuro in futuros:
-                yield from self.entradas_de(p, futuro.result())
+            futuros = [(self.por_tipo[t], n, ex.submit(self.por_tipo[t].Match, self.por_tipo[t].cfg["palavra"]))
+                       for t, n in ordem]
+            resto = []
+            for p, n, futuro in futuros:
+                entradas = list(self.entradas_de(p, futuro.result()))
+                yield from entradas[:n]
+                resto += entradas[n:]
+            yield from resto
             ajuda = self.por_tipo["Ajuda"]
             for nome, texto, desc, icone, origem, _ in ajuda.itens():
                 if origem == "do KDE" and not texto.endswith(":"):
