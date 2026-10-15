@@ -1554,6 +1554,10 @@ class Menu:
                     return None if achados else texto
                 mais_acoes, indice, digitado = r
                 return self.executar(achados[indice], mais_acoes, digitado) if 0 <= indice < len(achados) else None
+        m = re.match(r"^([\w.-]+)\s+(.+)$", texto)  # "protondb elden ring" vale igual a "protondb:elden ring"
+        if m and (url := url_atalho(m.group(1).lower(), m.group(2))):
+            lancar(["xdg-open", url])
+            return None
         lancar(["xdg-open", self.mc["busca"].format(quote(texto))])
         return None
 

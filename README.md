@@ -41,7 +41,7 @@ Start/stop/restart, pull/push e a IA avisam numa notificação quando terminam.
 | `ghc:texto` | Código no GitHub |
 | `ghme:nome` | Seus repositórios no GitHub (o usuário vem do `git config user.name`) |
 
-Esses se somam aos que já vêm no KDE (`gg:` Google, `yt:` YouTube, `wp:` Wikipedia, `gh:` GitHub, `archwiki:`...). A lista completa fica em Configurações do Sistema → Pesquisa → Atalhos da Web.
+Esses se somam aos que já vêm no KDE (`gg:` Google, `yt:` YouTube, `wp:` Wikipedia, `gh:` GitHub, `archwiki:`...). A lista completa fica em Configurações do Sistema → Pesquisa → Atalhos da Web. No menu, dá pra trocar os dois-pontos por espaço: `protondb elden ring` busca direto no ProtonDB.
 
 ### Ajuda
 
